@@ -3,6 +3,8 @@ using LinearAlgebra                                                 # We need tr
 using Random                                                        # Training and sampling both rely on randomness.
 using Statistics                                                    # RMSNorm and cross-entropy use reductions like mean.
 
+# ----- 1. Problem Setup ----------------------------------------------------
+
 const URL = "https://raw.githubusercontent.com/karpathy/makemore/988aa59/names.txt"  # Train on the canonical makemore names file.
 const S = '\n'                                                      # Newline is the only boundary token in the stream.
 const T = 16                                                        # The model sees at most 16 previous characters.
@@ -22,6 +24,18 @@ const NUM_SAMPLES = parse(Int, get(ENV, "MICROGPT_SAMPLES", "20"))  # Emit sever
 const MAX_NEW = T                                                   # Do not sample longer than the full context window.
 const SEED = 0                                                      # Keep runs repeatable.
 
+# ----- 2. Data And Tokenization --------------------------------------------
+
+function load_data()                                                # Read the corpus and build the minimal character tokenizer.
+    text = read(Downloads.download(URL), String)                    # Treat the entire file as one long stream of characters.
+    vocab = sort(collect(Set(text)))                                # Use exactly the unique characters that appear in the data.
+    stoi = Dict{Char, Int}(ch => i for (i, ch) in enumerate(vocab)) # Map chars to integer token ids.
+    ids = Int[stoi[ch] for ch in text]                              # Encode the full corpus once for efficient random slicing.
+    return ids, stoi, vocab                                         # `vocab[i]` is already the inverse map from id back to char.
+end                                                                 # This keeps tokenization maximally simple.
+
+# ----- 3. Parameter Initialization -----------------------------------------
+
 mutable struct Params                                               # A tiny GPT only needs one small bundle of learnable tensors.
     E::Matrix{Float32}                                              # Token embeddings, also reused as the tied output head.
     P::Matrix{Float32}                                              # Position embeddings for slots 1..T.
@@ -37,14 +51,6 @@ mutable struct Params                                               # A tiny GPT
 end                                                                 # One block means one parameter struct is the whole model.
 
 const PARAM_NAMES = fieldnames(Params)                              # Adam will iterate over all learnable tensors uniformly.
-
-function load_data()                                                # Read the corpus and build the minimal character tokenizer.
-    text = read(Downloads.download(URL), String)                    # Treat the entire file as one long stream of characters.
-    vocab = sort(collect(Set(text)))                                # Use exactly the unique characters that appear in the data.
-    stoi = Dict{Char, Int}(ch => i for (i, ch) in enumerate(vocab)) # Map chars to integer token ids.
-    ids = Int[stoi[ch] for ch in text]                              # Encode the full corpus once for efficient random slicing.
-    return ids, stoi, vocab                                         # `vocab[i]` is already the inverse map from id back to char.
-end                                                                 # This keeps tokenization maximally simple.
 
 function init_params(rng, V)                                        # Initialize the tiny GPT with small random weights.
     return Params(                                                  # The scaling matches the intended shapes closely.
@@ -67,6 +73,8 @@ function zeros_like(p::Params)                                      # Adam momen
     return Params(vals...)                                          # Reuse the same struct so optimizer code stays uniform.
 end                                                                 # Every trainable tensor gets a zero-filled twin.
 
+# ----- 4. Forward Pass -----------------------------------------------------
+
 g3(g) = reshape(g, 1, 1, :)                                         # Broadcast a channel vector across time and batch.
 flat(X) = reshape(X, :, size(X, 3))                                 # Collapse time and batch so linear maps reduce to matrix multiplies.
 
@@ -81,9 +89,9 @@ function dlinear(dY, X, W)                                          # Backprop t
 end                                                                 # This keeps the code close to the underlying matrix calculus.
 
 splitheads(X) = permutedims(reshape(X, size(X, 1), size(X, 2), H, D), (3, 2, 1, 4)) # Turn width C into H heads of width D.
-joinheads(X) = reshape(permutedims(X, (3, 2, 1, 4)), size(X, 3), size(X, 2), C)      # Put those heads back into one residual vector.
-transpose_last2(X) = permutedims(X, (1, 2, 4, 3))                                     # Batched matmul often needs the last two dims swapped.
-causal(t) = triu(fill(-1.0f9, t, t), 1)                                               # Future positions get a huge negative logit so softmax ignores them.
+joinheads(X) = reshape(permutedims(X, (3, 2, 1, 4)), size(X, 3), size(X, 2), C)     # Put those heads back into one residual vector.
+transpose_last2(X) = permutedims(X, (1, 2, 4, 3))                                   # Batched matmul often needs the last two dims swapped.
+causal(t) = triu(fill(-1.0f9, t, t), 1)                                             # Future positions get a huge negative logit so softmax ignores them.
 
 function bmm(A, B)                                                # Batched matrix multiply over head and batch dimensions.
     Y = Array{Float32}(undef, size(A, 1), size(A, 2), size(A, 3), size(B, 4))
@@ -110,34 +118,6 @@ function embed(E, tok)                                            # Look up embe
     X = E[vec(tok), :]                                            # Gather one row of E per token in the batch.
     return reshape(X, size(tok, 1), size(tok, 2), size(E, 2))     # Restore time and batch dimensions around the channel width.
 end                                                               # This turns integer tokens into model vectors.
-
-function embed_scatter(tok, dX, V)                                # Accumulate input-embedding gradients back into E.
-    dE = zeros(Float32, V, size(dX, 3))                           # Only rows that were actually used receive gradient mass.
-    @views for b in 1:size(tok, 2), t in 1:size(tok, 1)
-        dE[tok[t, b], :] .+= dX[t, b, :]
-    end
-    return dE                                                     # This is the reverse of embedding lookup.
-end                                                               # Tied embeddings later add output-side gradients too.
-
-function pick(probs, nxt)                                         # Gather the probability assigned to each true next token.
-    out = Matrix{Float32}(undef, size(nxt))
-    @inbounds for b in 1:size(nxt, 2), t in 1:size(nxt, 1)
-        out[t, b] = probs[t, b, nxt[t, b]]
-    end
-    return out                                                    # Cross-entropy only cares about the probability of the true class.
-end                                                               # This avoids building explicit one-hot targets for the loss.
-
-function sample_categorical(rng, q)                               # Draw one token id from a categorical distribution.
-    u = rand(rng, Float32)                                        # Sample one uniform number in [0,1).
-    s = 0.0f0                                                     # Accumulate probability mass until we cross the sample.
-    @inbounds for i in eachindex(q)
-        s += q[i]
-        if u <= s
-            return i
-        end
-    end
-    return lastindex(q)                                           # Numerical roundoff can leave a tiny tail; map it to the last token.
-end                                                               # This keeps sampling dependency-free.
 
 function rms_fwd(X, g)                                            # RMSNorm rescales each token vector by its root-mean-square size.
     r = sqrt.(mean(X .^ 2, dims=3) .+ EPS)                        # Compute one magnitude per token position and batch element.
@@ -222,6 +202,26 @@ function forward(tok, p)                                          # Inference ma
     return linear(Xf, p.E')                                       # Tying output weights to E keeps the model especially small.
 end                                                               # The same forward pass is used for training and sampling.
 
+# ----- 5. Loss -------------------------------------------------------------
+
+function pick(probs, nxt)                                         # Gather the probability assigned to each true next token.
+    out = Matrix{Float32}(undef, size(nxt))
+    @inbounds for b in 1:size(nxt, 2), t in 1:size(nxt, 1)
+        out[t, b] = probs[t, b, nxt[t, b]]
+    end
+    return out                                                    # Cross-entropy only cares about the probability of the true class.
+end                                                               # This avoids building explicit one-hot targets for the loss.
+
+# ----- 6. Backward Pass / Learning Signal ----------------------------------
+
+function embed_scatter(tok, dX, V)                                # Accumulate input-embedding gradients back into E.
+    dE = zeros(Float32, V, size(dX, 3))                           # Only rows that were actually used receive gradient mass.
+    @views for b in 1:size(tok, 2), t in 1:size(tok, 1)
+        dE[tok[t, b], :] .+= dX[t, b, :]
+    end
+    return dE                                                     # This is the reverse of embedding lookup.
+end                                                               # Tied embeddings later add output-side gradients too.
+
 function loss_and_grad(tok, nxt, p)                               # Training asks how wrong the model is and how every weight should move.
     Xtok = embed(p.E, tok)                                        # Embed the current input characters.
     Xpos = reshape(p.P[1:size(tok, 1), :], size(tok, 1), 1, C)    # Attach position information for the visible context.
@@ -245,6 +245,8 @@ function loss_and_grad(tok, nxt, p)                               # Training ask
     G = Params(dE, dP, db.g1, db.Wq, db.Wk, db.Wv, db.Wo, db.g2, db.W1, db.W2, dgf)
     return L, G                                                   # Return one scalar loss and one full gradient bundle.
 end                                                               # This is the entire manual training calculus in one function.
+
+# ----- 7. Optimizer --------------------------------------------------------
 
 function batch(ids, rng)                                          # Build one minibatch of random next-token prediction problems.
     starts = rand(rng, 1:length(ids)-T-1, BATCH)                  # Choose BATCH random start points in the long text stream.
@@ -271,6 +273,20 @@ function adam!(p, g, m, v, step)                                  # Adam turns r
     end
 end                                                               # No scheduler or weight decay is needed for this tiny run.
 
+# ----- 8. Training Loop ----------------------------------------------------
+
+function sample_categorical(rng, q)                               # Draw one token id from a categorical distribution.
+    u = rand(rng, Float32)                                        # Sample one uniform number in [0,1).
+    s = 0.0f0                                                     # Accumulate probability mass until we cross the sample.
+    @inbounds for i in eachindex(q)
+        s += q[i]
+        if u <= s
+            return i
+        end
+    end
+    return lastindex(q)                                           # Numerical roundoff can leave a tiny tail; map it to the last token.
+end                                                               # This keeps sampling dependency-free.
+
 function main()                                                   # Train the model, then sample a few names from it.
     rng = MersenneTwister(SEED)                                   # Fix the random seed so runs are repeatable.
     ids, stoi, itos = load_data()                                 # Load and tokenize the raw character stream.
@@ -285,6 +301,9 @@ function main()                                                   # Train the mo
             println("step=", step, " loss=", round(L, digits=4))  # Report training progress occasionally.
         end
     end
+
+    # ----- 9. Inference ----------------------------------------------------
+
     for _ in 1:NUM_SAMPLES                                        # After training, sample several names for inspection.
         out = [stoi[S]]                                           # Start from the shared boundary token.
         while length(out) <= MAX_NEW + 1

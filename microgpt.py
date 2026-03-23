@@ -21,22 +21,31 @@ import autograd.numpy as np
 from autograd import grad
 
 
+# ----- 1. Problem Setup ----------------------------------------------------
+
 URL = "https://raw.githubusercontent.com/karpathy/makemore/988aa59/names.txt"
+S = "\n"                     # Newline is the only boundary token in the stream.
 T, C, H = 16, 16, 4          # block size, model width, attention heads
 D, F = C // H, 4 * C         # head size, MLP hidden size
 BATCH, STEPS = 64, 1000
 LR, B1, B2, EPS = 3e-3, 0.9, 0.99, 1e-8
+TEMP, LOG_EVERY = 0.5, 100
+NUM_SAMPLES, MAX_NEW = 20, T
 rng = np.random.RandomState(0)
 
 
+# ----- 2. Data And Tokenization --------------------------------------------
+
 def load_data():
     text = urllib.request.urlopen(URL).read().decode("utf-8")
-    chars = sorted(set(text))                    # '\n' + lowercase alphabet
-    stoi = {ch: i for i, ch in enumerate(chars)}
-    itos = {i: ch for ch, i in stoi.items()}
-    ids = np.array([stoi[ch] for ch in text], dtype=np.int32)
+    chars = sorted(set(text))                    # Use exactly the characters that appear in the corpus.
+    stoi = {ch: i for i, ch in enumerate(chars)} # Character -> integer token id.
+    itos = {i: ch for ch, i in stoi.items()}     # Integer token id -> character.
+    ids = np.array([stoi[ch] for ch in text], dtype=np.int32)  # Encode the whole corpus once as a stream.
     return ids, stoi, itos, len(chars)
 
+
+# ----- 3. Parameter Initialization -----------------------------------------
 
 def init(shape, scale=0.02):
     fan_in = max(1, shape[0])
@@ -45,14 +54,14 @@ def init(shape, scale=0.02):
 
 def init_params(vocab):
     return {
-        "wte": init((vocab, C)),   # token embeddings, also tied output head
-        "wpe": init((T, C)),       # learned positions 0..15
-        "g1": np.ones(C),          # RMSNorm gain before attention
+        "wte": init((vocab, C)),   # Token embeddings, also reused as the tied output head.
+        "wpe": init((T, C)),       # Position embeddings for visible slots 0..T-1.
+        "g1": np.ones(C),          # RMSNorm gain before attention.
         "wq": init((C, C)), "wk": init((C, C)),
         "wv": init((C, C)), "wo": init((C, C)),
-        "g2": np.ones(C),          # RMSNorm gain before MLP
+        "g2": np.ones(C),          # RMSNorm gain before the feed-forward MLP.
         "fc": init((C, F)), "proj": init((F, C)),
-        "gf": np.ones(C),          # final RMSNorm gain
+        "gf": np.ones(C),          # Final RMSNorm gain before logits.
     }
 
 
@@ -60,47 +69,51 @@ def zeros_like_tree(tree):
     return {k: np.zeros_like(v) for k, v in tree.items()}
 
 
+# ----- 4. Forward Pass -----------------------------------------------------
+
 def softmax(x, axis=-1):
-    x = x - np.max(x, axis=axis, keepdims=True)
-    ex = np.exp(x)
+    x = x - np.max(x, axis=axis, keepdims=True)  # Shift logits for numerical stability.
+    ex = np.exp(x)                               # Exponentiate the centered logits.
     return ex / np.sum(ex, axis=axis, keepdims=True)
 
 
 def logsumexp(x, axis=-1, keepdims=False):
-    m = np.max(x, axis=axis, keepdims=True)
+    m = np.max(x, axis=axis, keepdims=True)      # Pull out the largest logit before exponentiating.
     y = m + np.log(np.sum(np.exp(x - m), axis=axis, keepdims=True))
     return y if keepdims else np.squeeze(y, axis=axis)
 
 
 def rmsnorm(x, gain):
-    rms = np.sqrt(np.mean(x * x, axis=-1, keepdims=True) + 1e-8)
+    rms = np.sqrt(np.mean(x * x, axis=-1, keepdims=True) + 1e-8)  # Root-mean-square size of each token vector.
     return gain * (x / rms)
 
 
 def attention(x, p):
     b, t, _ = x.shape
-    q = np.transpose((x @ p["wq"]).reshape(b, t, H, D), (0, 2, 1, 3))
-    k = np.transpose((x @ p["wk"]).reshape(b, t, H, D), (0, 2, 1, 3))
-    v = np.transpose((x @ p["wv"]).reshape(b, t, H, D), (0, 2, 1, 3))
-    mask = np.triu(np.ones((t, t)), 1) * -1e9   # causal: forbid future tokens
+    q = np.transpose((x @ p["wq"]).reshape(b, t, H, D), (0, 2, 1, 3))   # Queries ask what each position wants.
+    k = np.transpose((x @ p["wk"]).reshape(b, t, H, D), (0, 2, 1, 3))   # Keys say what each visible position offers.
+    v = np.transpose((x @ p["wv"]).reshape(b, t, H, D), (0, 2, 1, 3))   # Values carry the content to be copied forward.
+    mask = np.triu(np.ones((t, t)), 1) * -1e9                           # Causal mask forbids looking into the future.
     att = (q @ np.transpose(k, (0, 1, 3, 2))) / np.sqrt(D) + mask[None, None, :, :]
-    y = softmax(att, axis=-1) @ v
-    y = np.transpose(y, (0, 2, 1, 3)).reshape(b, t, C)
-    return y @ p["wo"]
+    y = softmax(att, axis=-1) @ v                                       # Attend to past values with softmax-normalized scores.
+    y = np.transpose(y, (0, 2, 1, 3)).reshape(b, t, C)                  # Recombine the heads into one residual-width vector.
+    return y @ p["wo"]                                                  # Mix the concatenated heads back into model space.
 
 
 def forward(tokens, p):
     b, t = tokens.shape
-    x = p["wte"][tokens] + p["wpe"][:t][None, :, :]
-    x = x + attention(rmsnorm(x, p["g1"]), p)
-    x = x + (np.maximum(0, rmsnorm(x, p["g2"]) @ p["fc"]) @ p["proj"])
-    x = rmsnorm(x, p["gf"])
-    return x @ p["wte"].T                      # tied output projection
+    x = p["wte"][tokens] + p["wpe"][:t][None, :, :]        # Add token identity and token position.
+    x = x + attention(rmsnorm(x, p["g1"]), p)              # Attention reads from the causal past, then updates the residual stream.
+    x = x + (np.maximum(0, rmsnorm(x, p["g2"]) @ p["fc"]) @ p["proj"])  # The MLP refines each position independently.
+    x = rmsnorm(x, p["gf"])                                # Final normalization before vocabulary scoring.
+    return x @ p["wte"].T                                  # Tie output logits back to the embedding table.
 
+
+# ----- 5. Loss -------------------------------------------------------------
 
 def cross_entropy(logits, target, vocab):
-    logp = logits - logsumexp(logits, axis=-1, keepdims=True)
-    one_hot = np.eye(vocab)[target]           # pedagogical, not memory-optimal
+    logp = logits - logsumexp(logits, axis=-1, keepdims=True)  # Convert logits into log-probabilities.
+    one_hot = np.eye(vocab)[target]                            # Build pedagogical one-hot targets.
     return -np.mean(np.sum(one_hot * logp, axis=-1))
 
 
@@ -108,51 +121,59 @@ def loss(p, x, y, vocab):
     return cross_entropy(forward(x, p), y, vocab)
 
 
+# ----- 6. Backward Pass / Learning Signal ----------------------------------
+
+def learning_signal(vocab):
+    return grad(lambda params, x, y: loss(params, x, y, vocab))    # Autograd turns the scalar loss into gradients for every parameter.
+
+
+# ----- 7. Optimizer --------------------------------------------------------
+
 def get_batch(ids):
-    starts = rng.randint(0, len(ids) - T - 1, size=BATCH)
-    x = np.stack([ids[i:i + T] for i in starts])
-    y = np.stack([ids[i + 1:i + T + 1] for i in starts])
+    starts = rng.randint(0, len(ids) - T - 1, size=BATCH)     # Choose random windows in the long character stream.
+    x = np.stack([ids[i:i + T] for i in starts])              # Inputs are length-T contexts.
+    y = np.stack([ids[i + 1:i + T + 1] for i in starts])      # Targets are those same windows shifted one token ahead.
     return x, y
 
 
 def adam_step(p, g, m, v, step):
     for k in p:
-        m[k] = B1 * m[k] + (1 - B1) * g[k]
-        v[k] = B2 * v[k] + (1 - B2) * (g[k] * g[k])
-        m_hat = m[k] / (1 - B1 ** step)
-        v_hat = v[k] / (1 - B2 ** step)
-        p[k] = p[k] - LR * m_hat / (np.sqrt(v_hat) + EPS)
+        m[k] = B1 * m[k] + (1 - B1) * g[k]                    # Update Adam's running average of gradients.
+        v[k] = B2 * v[k] + (1 - B2) * (g[k] * g[k])           # Update Adam's running average of squared gradients.
+        m_hat = m[k] / (1 - B1 ** step)                       # Bias-correct the first moment.
+        v_hat = v[k] / (1 - B2 ** step)                       # Bias-correct the second moment.
+        p[k] = p[k] - LR * m_hat / (np.sqrt(v_hat) + EPS)     # Take the adaptive parameter step.
     return p, m, v
 
 
-def sample(p, stoi, itos, temp=0.5, max_new_tokens=32):
-    out = [stoi["\n"]]                        # reuse newline as BOS boundary
-    for _ in range(max_new_tokens):
-        ctx = np.array([out[-T:]], dtype=np.int32)
-        logits = forward(ctx, p)[0, -1] / temp
-        probs = softmax(logits)
-        nxt = rng.choice(len(probs), p=np.asarray(probs))
-        out.append(int(nxt))
-        if itos[nxt] == "\n":
-            break
-    return "".join(itos[i] for i in out[1:-1])
-
+# ----- 8. Training Loop ----------------------------------------------------
 
 def main():
-    ids, stoi, itos, vocab = load_data()
-    p = init_params(vocab)
-    m, v = zeros_like_tree(p), zeros_like_tree(p)
-    dloss = grad(lambda params, x, y: loss(params, x, y, vocab))
+    ids, stoi, itos, vocab = load_data()                            # Load and tokenize the raw character stream.
+    p = init_params(vocab)                                          # Initialize the tiny GPT weights.
+    m, v = zeros_like_tree(p), zeros_like_tree(p)                   # Adam moment buffers start at zero.
+    dloss = learning_signal(vocab)                                  # This is the model's learning signal.
 
     for step in range(1, STEPS + 1):
-        x, y = get_batch(ids)
-        g = dloss(p, x, y)
-        p, m, v = adam_step(p, g, m, v, step)
-        if step % 100 == 0:
+        x, y = get_batch(ids)                                       # Draw a fresh minibatch of next-token problems.
+        g = dloss(p, x, y)                                          # Compute the gradient of the current loss.
+        p, m, v = adam_step(p, g, m, v, step)                       # Update the parameters with Adam.
+        if step % LOG_EVERY == 0:
             print(f"step {step:4d} loss {loss(p, x, y, vocab):.4f}")
 
-    for _ in range(20):
-        print(sample(p, stoi, itos, temp=0.5))
+    # ----- 9. Inference ----------------------------------------------------
+
+    for _ in range(NUM_SAMPLES):
+        out = [stoi[S]]                                             # Start from the boundary token that marks a new name.
+        for _ in range(MAX_NEW):
+            ctx = np.array([out[-T:]], dtype=np.int32)              # Only the most recent T tokens are visible.
+            logits = forward(ctx, p)[0, -1] / TEMP                  # Predict the next-token logits for the last visible position.
+            probs = softmax(logits)                                 # Turn logits into a categorical distribution.
+            nxt = rng.choice(len(probs), p=np.asarray(probs))       # Sample instead of argmax so names vary across runs.
+            out.append(int(nxt))
+            if itos[nxt] == S:
+                break
+        print("".join(itos[i] for i in out[1:-1]))
 
 
 if __name__ == "__main__":
