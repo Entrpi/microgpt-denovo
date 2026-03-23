@@ -21,7 +21,9 @@ import autograd.numpy as np
 from autograd import grad
 
 
-# ----- 1. Problem Setup ----------------------------------------------------
+# =============================================================================
+# 1. Setup, Data, And Parameters
+# =============================================================================
 
 URL = "https://raw.githubusercontent.com/karpathy/makemore/988aa59/names.txt"
 S = "\n"                     # Newline is the only boundary token in the stream.
@@ -34,8 +36,6 @@ NUM_SAMPLES, MAX_NEW = 20, T
 rng = np.random.RandomState(0)
 
 
-# ----- 2. Data And Tokenization --------------------------------------------
-
 def load_data():
     text = urllib.request.urlopen(URL).read().decode("utf-8")
     chars = sorted(set(text))                    # Use exactly the characters that appear in the corpus.
@@ -43,9 +43,6 @@ def load_data():
     itos = {i: ch for ch, i in stoi.items()}     # Integer token id -> character.
     ids = np.array([stoi[ch] for ch in text], dtype=np.int32)  # Encode the whole corpus once as a stream.
     return ids, stoi, itos, len(chars)
-
-
-# ----- 3. Parameter Initialization -----------------------------------------
 
 def init(shape, scale=0.02):
     fan_in = max(1, shape[0])
@@ -69,7 +66,9 @@ def zeros_like_tree(tree):
     return {k: np.zeros_like(v) for k, v in tree.items()}
 
 
-# ----- 4. Forward Pass -----------------------------------------------------
+# =============================================================================
+# 2. Transformer Forward Pass
+# =============================================================================
 
 def softmax(x, axis=-1):
     x = x - np.max(x, axis=axis, keepdims=True)  # Shift logits for numerical stability.
@@ -109,7 +108,9 @@ def forward(tokens, p):
     return x @ p["wte"].T                                  # Tie output logits back to the embedding table.
 
 
-# ----- 5. Loss -------------------------------------------------------------
+# =============================================================================
+# 3. Learning: Loss, Gradients, And Adam
+# =============================================================================
 
 def cross_entropy(logits, target, vocab):
     logp = logits - logsumexp(logits, axis=-1, keepdims=True)  # Convert logits into log-probabilities.
@@ -118,16 +119,12 @@ def cross_entropy(logits, target, vocab):
 
 
 def loss(p, x, y, vocab):
-    return cross_entropy(forward(x, p), y, vocab)
-
-
-# ----- 6. Backward Pass / Learning Signal ----------------------------------
+    logits = forward(x, p)                                 # The forward pass turns each visible context into next-token scores.
+    return cross_entropy(logits, y, vocab)                 # The loss asks whether the true next characters received high probability.
 
 def learning_signal(vocab):
-    return grad(lambda params, x, y: loss(params, x, y, vocab))    # Autograd turns the scalar loss into gradients for every parameter.
-
-
-# ----- 7. Optimizer --------------------------------------------------------
+    objective = lambda params, x, y: loss(params, x, y, vocab)     # Differentiate the training objective we just defined above.
+    return grad(objective)                                         # This backward function tells every weight how to reduce the loss.
 
 def get_batch(ids):
     starts = rng.randint(0, len(ids) - T - 1, size=BATCH)     # Choose random windows in the long character stream.
@@ -146,22 +143,32 @@ def adam_step(p, g, m, v, step):
     return p, m, v
 
 
-# ----- 8. Training Loop ----------------------------------------------------
+# =============================================================================
+# 4. Training And Inference
+# =============================================================================
 
 def main():
     ids, stoi, itos, vocab = load_data()                            # Load and tokenize the raw character stream.
     p = init_params(vocab)                                          # Initialize the tiny GPT weights.
     m, v = zeros_like_tree(p), zeros_like_tree(p)                   # Adam moment buffers start at zero.
-    dloss = learning_signal(vocab)                                  # This is the model's learning signal.
+    backward = learning_signal(vocab)                               # This is the model's backward pass: it turns loss into gradients.
 
     for step in range(1, STEPS + 1):
         x, y = get_batch(ids)                                       # Draw a fresh minibatch of next-token problems.
-        g = dloss(p, x, y)                                          # Compute the gradient of the current loss.
-        p, m, v = adam_step(p, g, m, v, step)                       # Update the parameters with Adam.
-        if step % LOG_EVERY == 0:
-            print(f"step {step:4d} loss {loss(p, x, y, vocab):.4f}")
 
-    # ----- 9. Inference ----------------------------------------------------
+        # --- Form The Loss -------------------------------------------------
+        batch_loss = loss(p, x, y, vocab)                           # First measure how surprised the model is by the true next characters.
+
+        # --- Ask For Gradients --------------------------------------------
+        g = backward(p, x, y)                                       # Then ask autograd how every parameter should move to reduce that surprise.
+
+        # --- Let Adam Apply The Correction -------------------------------
+        p, m, v = adam_step(p, g, m, v, step)                       # Adam turns that learning signal into the actual parameter update.
+
+        if step % LOG_EVERY == 0:
+            print(f"step {step:4d} loss {batch_loss:.4f}")
+
+    # --- Speak: Inference --------------------------------------------------
 
     for _ in range(NUM_SAMPLES):
         out = [stoi[S]]                                             # Start from the boundary token that marks a new name.

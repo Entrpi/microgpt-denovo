@@ -3,7 +3,9 @@ using LinearAlgebra                                                 # We need tr
 using Random                                                        # Training and sampling both rely on randomness.
 using Statistics                                                    # RMSNorm and cross-entropy use reductions like mean.
 
-# ----- 1. Problem Setup ----------------------------------------------------
+# =============================================================================
+# 1. Setup, Data, And Parameters
+# =============================================================================
 
 const URL = "https://raw.githubusercontent.com/karpathy/makemore/988aa59/names.txt"  # Train on the canonical makemore names file.
 const S = '\n'                                                      # Newline is the only boundary token in the stream.
@@ -24,8 +26,6 @@ const NUM_SAMPLES = parse(Int, get(ENV, "MICROGPT_SAMPLES", "20"))  # Emit sever
 const MAX_NEW = T                                                   # Do not sample longer than the full context window.
 const SEED = 0                                                      # Keep runs repeatable.
 
-# ----- 2. Data And Tokenization --------------------------------------------
-
 function load_data()                                                # Read the corpus and build the minimal character tokenizer.
     text = read(Downloads.download(URL), String)                    # Treat the entire file as one long stream of characters.
     vocab = sort(collect(Set(text)))                                # Use exactly the unique characters that appear in the data.
@@ -33,8 +33,6 @@ function load_data()                                                # Read the c
     ids = Int[stoi[ch] for ch in text]                              # Encode the full corpus once for efficient random slicing.
     return ids, stoi, vocab                                         # `vocab[i]` is already the inverse map from id back to char.
 end                                                                 # This keeps tokenization maximally simple.
-
-# ----- 3. Parameter Initialization -----------------------------------------
 
 mutable struct Params                                               # A tiny GPT only needs one small bundle of learnable tensors.
     E::Matrix{Float32}                                              # Token embeddings, also reused as the tied output head.
@@ -73,25 +71,25 @@ function zeros_like(p::Params)                                      # Adam momen
     return Params(vals...)                                          # Reuse the same struct so optimizer code stays uniform.
 end                                                                 # Every trainable tensor gets a zero-filled twin.
 
-# ----- 4. Forward Pass -----------------------------------------------------
-
-g3(g) = reshape(g, 1, 1, :)                                         # Broadcast a channel vector across time and batch.
-flat(X) = reshape(X, :, size(X, 3))                                 # Collapse time and batch so linear maps reduce to matrix multiplies.
+# =============================================================================
+# 2. Transformer Forward Pass
+# =============================================================================
 
 function linear(X, W)                                               # Apply a weight matrix to the last dimension of a 3D tensor.
-    return reshape(flat(X) * W, size(X, 1), size(X, 2), size(W, 2))
+    X2 = reshape(X, :, size(X, 3))                                  # Collapse time and batch so one matmul handles every token vector.
+    return reshape(X2 * W, size(X, 1), size(X, 2), size(W, 2))
 end                                                                 # This is the basic projection primitive used everywhere.
 
 function dlinear(dY, X, W)                                          # Backprop through Y = XW.
-    dX = reshape(flat(dY) * W', size(X))                            # Input gradients flow through W transpose.
-    dW = flat(X)' * flat(dY)                                        # Weight gradients are input-transpose times output-gradient.
+    dY2 = reshape(dY, :, size(dY, 3))                               # Flatten the output gradient in the same way as the forward pass.
+    X2 = reshape(X, :, size(X, 3))                                  # Flatten the input activations so matrix calculus stays visible.
+    dX = reshape(dY2 * W', size(X))                                 # Input gradients flow through W transpose.
+    dW = X2' * dY2                                                  # Weight gradients are input-transpose times output-gradient.
     return dX, dW                                                   # Linear layers are now explicit in both directions.
 end                                                                 # This keeps the code close to the underlying matrix calculus.
 
 splitheads(X) = permutedims(reshape(X, size(X, 1), size(X, 2), H, D), (3, 2, 1, 4)) # Turn width C into H heads of width D.
 joinheads(X) = reshape(permutedims(X, (3, 2, 1, 4)), size(X, 3), size(X, 2), C)     # Put those heads back into one residual vector.
-transpose_last2(X) = permutedims(X, (1, 2, 4, 3))                                   # Batched matmul often needs the last two dims swapped.
-causal(t) = triu(fill(-1.0f9, t, t), 1)                                             # Future positions get a huge negative logit so softmax ignores them.
 
 function bmm(A, B)                                                # Batched matrix multiply over head and batch dimensions.
     Y = Array{Float32}(undef, size(A, 1), size(A, 2), size(A, 3), size(B, 4))
@@ -122,13 +120,13 @@ end                                                               # This turns i
 function rms_fwd(X, g)                                            # RMSNorm rescales each token vector by its root-mean-square size.
     r = sqrt.(mean(X .^ 2, dims=3) .+ EPS)                        # Compute one magnitude per token position and batch element.
     Xhat = X ./ r                                                 # Divide by that magnitude to stabilize the residual stream.
-    Y = Xhat .* g3(g)                                             # Reintroduce learned per-channel scaling after normalization.
+    Y = Xhat .* reshape(g, 1, 1, :)                               # Reintroduce learned per-channel scaling after normalization.
     return Y, (X, Xhat, g, r)                                     # Save the local state required for the backward pass.
 end                                                               # This matches the bias-free RMSNorm variant requested.
 
 function rms_bwd(dY, cache)                                       # Differentiate the RMSNorm step explicitly.
     X, Xhat, g, r = cache                                         # Recover the forward intermediates.
-    dXhat = dY .* g3(g)                                           # The gain multiplies the upstream gradient channelwise.
+    dXhat = dY .* reshape(g, 1, 1, :)                             # The gain multiplies the upstream gradient channelwise.
     corr = mean(dXhat .* X, dims=3)                               # The shared denominator couples the channels through one correction term.
     dX = dXhat ./ r .- X .* corr ./ (r .^ 3)                      # This is the derivative of X / rms(X).
     dg = vec(sum(dY .* Xhat, dims=(1, 2)))                        # Gain gradients sum over all time steps and all examples.
@@ -139,8 +137,8 @@ function attn_fwd(X, p)                                           # Self-attenti
     Q = splitheads(linear(X, p.Wq))                               # Queries say what the current position wants.
     K = splitheads(linear(X, p.Wk))                               # Keys say what each past position offers.
     Vh = splitheads(linear(X, p.Wv))                              # Values carry the content that may be copied forward.
-    scores = bmm(Q, transpose_last2(K)) ./ sqrt(Float32(D))       # Scale dot products so logits stay in a reasonable range.
-    scores .+= reshape(causal(size(X, 1)), 1, 1, size(X, 1), size(X, 1)) # Mask future positions before softmax.
+    scores = bmm(Q, permutedims(K, (1, 2, 4, 3))) ./ sqrt(Float32(D))     # Scale dot products so logits stay in a reasonable range.
+    scores .+= reshape(triu(fill(-1.0f9, size(X, 1), size(X, 1)), 1), 1, 1, size(X, 1), size(X, 1)) # Mask future positions before softmax.
     P = softmax_last(scores)                                      # Turn scores into attention weights over visible history.
     A = bmm(P, Vh)                                                # Average value vectors according to those weights.
     Y = linear(joinheads(A), p.Wo)                                # Merge heads and project back into residual space.
@@ -152,12 +150,12 @@ function attn_bwd(dY, cache, p)                                   # Trace the le
     Acat = joinheads(A)                                           # Recreate the concatenated head representation before Wo.
     dAcat, dWo = dlinear(dY, Acat, p.Wo)                          # Undo the output projection and learn how Wo should change.
     dA = splitheads(dAcat)                                        # Return to per-head layout.
-    dP = bmm(dA, transpose_last2(Vh))                             # A = P V, so one gradient goes to the attention weights P.
-    dVh = bmm(transpose_last2(P), dA)                             # The other gradient goes to the value vectors V.
+    dP = bmm(dA, permutedims(Vh, (1, 2, 4, 3)))                   # A = P V, so one gradient goes to the attention weights P.
+    dVh = bmm(permutedims(P, (1, 2, 4, 3)), dA)                   # The other gradient goes to the value vectors V.
     dS = P .* (dP .- sum(dP .* P, dims=4))                        # Softmax backward without constructing the full Jacobian.
     dS ./= sqrt(Float32(D))                                       # Undo the forward scaling of the attention scores.
     dQ = bmm(dS, K)                                               # Scores depend linearly on Q when K is fixed.
-    dK = bmm(transpose_last2(dS), Q)                              # Scores also depend linearly on K when Q is fixed.
+    dK = bmm(permutedims(dS, (1, 2, 4, 3)), Q)                    # Scores also depend linearly on K when Q is fixed.
     dQcat = joinheads(dQ)                                         # Move query gradients back into residual width C.
     dKcat = joinheads(dK)                                         # Move key gradients back into residual width C.
     dVcat = joinheads(dVh)                                        # Move value gradients back into residual width C.
@@ -202,17 +200,9 @@ function forward(tok, p)                                          # Inference ma
     return linear(Xf, p.E')                                       # Tying output weights to E keeps the model especially small.
 end                                                               # The same forward pass is used for training and sampling.
 
-# ----- 5. Loss -------------------------------------------------------------
-
-function pick(probs, nxt)                                         # Gather the probability assigned to each true next token.
-    out = Matrix{Float32}(undef, size(nxt))
-    @inbounds for b in 1:size(nxt, 2), t in 1:size(nxt, 1)
-        out[t, b] = probs[t, b, nxt[t, b]]
-    end
-    return out                                                    # Cross-entropy only cares about the probability of the true class.
-end                                                               # This avoids building explicit one-hot targets for the loss.
-
-# ----- 6. Backward Pass / Learning Signal ----------------------------------
+# =============================================================================
+# 3. Learning: Loss, Gradients, And Adam
+# =============================================================================
 
 function embed_scatter(tok, dX, V)                                # Accumulate input-embedding gradients back into E.
     dE = zeros(Float32, V, size(dX, 3))                           # Only rows that were actually used receive gradient mass.
@@ -230,7 +220,11 @@ function loss_and_grad(tok, nxt, p)                               # Training ask
     Xf, cf = rms_fwd(H, p.gf)                                     # Run the final RMSNorm and save its cache too.
     logits = linear(Xf, p.E')                                     # Score every vocabulary item at every position.
     probs = softmax_last(logits)                                  # Convert logits into next-token distributions.
-    L = -mean(log.(pick(probs, nxt)))                             # Cross-entropy rewards putting mass on the true next character.
+    true_probs = Matrix{Float32}(undef, size(nxt))                # Cross-entropy only needs the probability of the true next token.
+    @inbounds for b in 1:size(nxt, 2), t in 1:size(nxt, 1)
+        true_probs[t, b] = probs[t, b, nxt[t, b]]                 # Gather that probability directly instead of building one-hot targets.
+    end
+    L = -mean(log.(true_probs))                                   # Cross-entropy rewards putting mass on the true next character.
     dlogits = copy(probs)                                         # Softmax-cross-entropy starts from the probabilities.
     @inbounds for b in 1:size(nxt, 2), t in 1:size(nxt, 1)
         dlogits[t, b, nxt[t, b]] -= 1.0f0                         # Subtract the one-hot target distribution in place.
@@ -245,8 +239,6 @@ function loss_and_grad(tok, nxt, p)                               # Training ask
     G = Params(dE, dP, db.g1, db.Wq, db.Wk, db.Wv, db.Wo, db.g2, db.W1, db.W2, dgf)
     return L, G                                                   # Return one scalar loss and one full gradient bundle.
 end                                                               # This is the entire manual training calculus in one function.
-
-# ----- 7. Optimizer --------------------------------------------------------
 
 function batch(ids, rng)                                          # Build one minibatch of random next-token prediction problems.
     starts = rand(rng, 1:length(ids)-T-1, BATCH)                  # Choose BATCH random start points in the long text stream.
@@ -273,19 +265,9 @@ function adam!(p, g, m, v, step)                                  # Adam turns r
     end
 end                                                               # No scheduler or weight decay is needed for this tiny run.
 
-# ----- 8. Training Loop ----------------------------------------------------
-
-function sample_categorical(rng, q)                               # Draw one token id from a categorical distribution.
-    u = rand(rng, Float32)                                        # Sample one uniform number in [0,1).
-    s = 0.0f0                                                     # Accumulate probability mass until we cross the sample.
-    @inbounds for i in eachindex(q)
-        s += q[i]
-        if u <= s
-            return i
-        end
-    end
-    return lastindex(q)                                           # Numerical roundoff can leave a tiny tail; map it to the last token.
-end                                                               # This keeps sampling dependency-free.
+# =============================================================================
+# 4. Training And Inference
+# =============================================================================
 
 function main()                                                   # Train the model, then sample a few names from it.
     rng = MersenneTwister(SEED)                                   # Fix the random seed so runs are repeatable.
@@ -295,14 +277,19 @@ function main()                                                   # Train the mo
     v = zeros_like(p)                                             # Adam second moments start at zero.
     for step in 1:STEPS                                           # Repeat batch, loss, gradient, update.
         tok, nxt = batch(ids, rng)
+
+        # --- Form The Loss -------------------------------------------------
         L, G = loss_and_grad(tok, nxt, p)
+
+        # --- Let Adam Apply The Correction -------------------------------
         adam!(p, G, m, v, step)
+
         if step % LOG_EVERY == 0
             println("step=", step, " loss=", round(L, digits=4))  # Report training progress occasionally.
         end
     end
 
-    # ----- 9. Inference ----------------------------------------------------
+    # --- Speak: Inference --------------------------------------------------
 
     for _ in 1:NUM_SAMPLES                                        # After training, sample several names for inspection.
         out = [stoi[S]]                                           # Start from the shared boundary token.
@@ -311,7 +298,16 @@ function main()                                                   # Train the mo
             ctx = reshape(tail, :, 1)                             # Turn the prefix into a single-example token matrix.
             logits = forward(ctx, p)                              # Ask the model for logits at every visible position.
             q = softmax_last(vec(logits[end, 1, :]) ./ TEMP)      # Use only the final position and apply temperature.
-            nxt = sample_categorical(rng, q)                      # Sample one next character stochastically.
+            u = rand(rng, Float32)                                # Sample one uniform number in [0,1).
+            s = 0.0f0                                             # Accumulate probability mass until we cross the sample.
+            nxt = lastindex(q)                                    # Keep the last token as a safe fallback for roundoff.
+            @inbounds for i in eachindex(q)
+                s += q[i]
+                if u <= s
+                    nxt = i                                       # The first bin whose mass covers u becomes the sampled token.
+                    break
+                end
+            end
             push!(out, nxt)
             if itos[nxt] == S
                 break                                             # A boundary token ends the current sampled name.
