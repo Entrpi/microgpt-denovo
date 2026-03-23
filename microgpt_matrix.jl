@@ -6,6 +6,10 @@ using Statistics                                                    # RMSNorm an
 # =============================================================================
 # 1. Setup, Data, And Parameters
 # =============================================================================
+#
+# We begin by deciding what tiny GPT we want to study. Then we turn the raw names
+# file into one stream of integer tokens and create the tensors that will hold
+# the model's memory: embeddings, attention projections, MLP weights, and gains.
 
 const URL = "https://raw.githubusercontent.com/karpathy/makemore/988aa59/names.txt"  # Train on the canonical makemore names file.
 const S = '\n'                                                      # Newline is the only boundary token in the stream.
@@ -74,6 +78,10 @@ end                                                                 # Every trai
 # =============================================================================
 # 2. Transformer Forward Pass
 # =============================================================================
+#
+# This section is the model's act of thinking. Tokens become vectors, attention
+# lets each position read from the causal past, the MLP reshapes that information,
+# and the final projection turns the residual stream into next-character logits.
 
 function linear(X, W)                                               # Apply a weight matrix to the last dimension of a 3D tensor.
     X2 = reshape(X, :, size(X, 3))                                  # Collapse time and batch so one matmul handles every token vector.
@@ -203,6 +211,10 @@ end                                                               # The same for
 # =============================================================================
 # 3. Learning: Loss, Gradients, And Adam
 # =============================================================================
+#
+# Now predictions become a learning signal. Cross-entropy says how wrong the model
+# was, the explicit backward equations carry that mistake through every operation,
+# and Adam turns those gradients into small, stable corrections to the weights.
 
 function embed_scatter(tok, dX, V)                                # Accumulate input-embedding gradients back into E.
     dE = zeros(Float32, V, size(dX, 3))                           # Only rows that were actually used receive gradient mass.
@@ -268,6 +280,10 @@ end                                                               # No scheduler
 # =============================================================================
 # 4. Training And Inference
 # =============================================================================
+#
+# Here the whole algorithm runs as a process in time. Training repeatedly samples
+# short contexts, measures the model's mistake, and updates the weights; once
+# learning is done, the same forward pass is reused to speak one token at a time.
 
 function main()                                                   # Train the model, then sample a few names from it.
     rng = MersenneTwister(SEED)                                   # Fix the random seed so runs are repeatable.

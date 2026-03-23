@@ -24,6 +24,10 @@ from autograd import grad
 # =============================================================================
 # 1. Setup, Data, And Parameters
 # =============================================================================
+#
+# We begin by deciding what tiny GPT we want to study. Then we turn the raw names
+# file into one stream of integer tokens and create the matrices that will hold
+# the model's memory: embeddings, attention projections, MLP weights, and gains.
 
 URL = "https://raw.githubusercontent.com/karpathy/makemore/988aa59/names.txt"
 S = "\n"                     # Newline is the only boundary token in the stream.
@@ -69,6 +73,10 @@ def zeros_like_tree(tree):
 # =============================================================================
 # 2. Transformer Forward Pass
 # =============================================================================
+#
+# This section is the model's act of thinking. Tokens become vectors, attention
+# lets each position read from the causal past, the MLP reshapes that information,
+# and the final projection turns the residual stream into next-character logits.
 
 def softmax(x, axis=-1):
     x = x - np.max(x, axis=axis, keepdims=True)  # Shift logits for numerical stability.
@@ -111,6 +119,10 @@ def forward(tokens, p):
 # =============================================================================
 # 3. Learning: Loss, Gradients, And Adam
 # =============================================================================
+#
+# Now predictions become a learning signal. Cross-entropy says how wrong the model
+# was, autograd turns that scalar mistake into gradients for every parameter, and
+# Adam turns those gradients into small, stable corrections to the weights.
 
 def cross_entropy(logits, target, vocab):
     logp = logits - logsumexp(logits, axis=-1, keepdims=True)  # Convert logits into log-probabilities.
@@ -146,6 +158,10 @@ def adam_step(p, g, m, v, step):
 # =============================================================================
 # 4. Training And Inference
 # =============================================================================
+#
+# Here the whole algorithm runs as a process in time. Training repeatedly samples
+# short contexts, measures the model's mistake, and updates the weights; once
+# learning is done, the same forward pass is reused to speak one token at a time.
 
 def main():
     ids, stoi, itos, vocab = load_data()                            # Load and tokenize the raw character stream.
