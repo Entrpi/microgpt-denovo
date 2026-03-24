@@ -18,7 +18,7 @@ If a convenience abstraction hides the algorithm, I want to remove it.
 
 You can see in the dialog below my very-first-attempt conversation with ChatGPT 5.4 xhigh in Codex App on Mar 23, 2026 which produced the files below:
 
-- `microgpt.py`: a validated Python implementation that stays close to the original Autograd-shaped draft.
+- `microgpt.py`: a validated Python implementation with a from-scratch scalar autograd engine and explicit chain-rule edges.
 - `microgpt_matrix.jl`: a validated Julia implementation of the matrix-calculus version with explicit forward and backward passes.
 
 I was inspired to go in the matrix math direction for speed when writing my own [EEmicroGPT](https://github.com/Entrpi/eemicrogpt), which is the fastest implementation of `microgpt`, but does not aim for brevity or clarity. I was inspired to make that brief and clear too after seeing [ssrhaso/microjpt](https://github.com/ssrhaso/microjpt).
@@ -240,13 +240,31 @@ The Python file is hugely undercommented relative to Julia, and the autograd sho
 
 Assistant:
 Added more narrative comments around the Python forward pass, loss, Adam step, and sampling path, and made the scalar `Value` engine read more explicitly as the autograd core.
+
+User:
+Let's fully refactor our autograd to be shorter and clearer.
+
+Important:
+Choose the representation that makes backward propagation look like `child.grad += local_grad * node.grad`.
+Do not optimize for abstraction reuse inside the autograd engine; optimize for the student’s mental model of the chain rule.
+
+Assistant:
+Refactored the Python autograd engine around explicit edges of the form `(child, local_grad)`.
+
+The old `_binary(...)`, `_unary(...)`, and `_backward` closure machinery is gone. Each operator now states its own local derivative directly, and the backward pass literally loops over stored edges and applies the chain rule as `child.grad += local_grad * node.grad`. That made the autograd block both shorter and easier to read as mathematics.
+
+User:
+Let's review the whitespace and comments to make sure they flow neatly. Avoid adding any more newlines for comments. Most comments should be along a second column that runs across the right of the document.
+
+Assistant:
+Cleaned up the Python file so the comments read more consistently as a right-hand second column.
 ```
 
 ## Status
 
 This repository now contains two verified runnable implementations:
 
-- `microgpt.py` runs under `uv` with CPython 3.14 and a hand-rolled scalar `Value` autograd engine.
+- `microgpt.py` runs under `uv` with CPython 3.14 and a hand-rolled scalar `Value` autograd engine whose backward pass follows explicit `(child, local_grad)` edges.
 - `microgpt_matrix.jl` runs under Julia 1.12 with no external Julia package dependencies.
 
 Both train for 1000 steps on the raw newline-delimited names stream and then sample names at temperature `0.5`.
