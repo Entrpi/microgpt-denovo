@@ -55,7 +55,10 @@ class Value:                                                       # This is the
 
     def __truediv__(self, other):                                  # Division uses the quotient rule.
         other = self._coerce(other)
-        return Value(self.data / other.data, ((self, 1.0 / other.data), (other, -self.data / (other.data * other.data))))
+        out = self.data / other.data
+        grads = ((self, 1.0 / other.data),                         # The numerator scales by the reciprocal denominator.
+                 (other, -self.data / (other.data * other.data)))  # The denominator receives the negative quotient slope.
+        return Value(out, grads)
     def __rtruediv__(self, other): return self._coerce(other) / self
 
     def exp(self):                                                 # Exponentials turn logits into positive mass for softmax.
@@ -68,7 +71,10 @@ class Value:                                                       # This is the
         out = math.sqrt(self.data)
         return Value(out, ((self, 0.5 / out),))
 
-    def relu(self): return Value(self.data if self.data > 0.0 else 0.0, ((self, 1.0 if self.data > 0.0 else 0.0),))  # ReLU is the MLP nonlinearity.
+    def relu(self):                                                # ReLU is the MLP nonlinearity.
+        out = self.data if self.data > 0.0 else 0.0
+        slope = 1.0 if self.data > 0.0 else 0.0                    # Positive inputs pass through; negative ones go flat.
+        return Value(out, ((self, slope),))
 
     def backward(self):                                            # Backward walks the graph in reverse topological order.
         topo, seen = [], set()                                     # Topological order guarantees each node receives complete downstream blame.
@@ -107,7 +113,11 @@ def zero_grads(tree):                                             # Backprop acc
         leaf.grad = 0.0
 
 def zeros_like(tree):                                             # Adam keeps its own tree-shaped moment buffers (with the same nested shape as the parameters)
-    return {k: zeros_like(v) for k, v in tree.items()} if isinstance(tree, dict) else [zeros_like(v) for v in tree] if isinstance(tree, list) else 0.0  # Scalars start at zero.
+    if isinstance(tree, dict):
+        return {k: zeros_like(v) for k, v in tree.items()}        # Dictionaries recurse key by key.
+    if isinstance(tree, list):
+        return [zeros_like(v) for v in tree]                      # Lists recurse element by element.
+    return 0.0                                                    # Scalars start at zero.
 
 def init_matrix(rows, cols, scale=0.02):                          # Small random weights keep the first residual stream near identity.
     fan_in = max(1, rows)

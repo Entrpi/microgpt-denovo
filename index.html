@@ -3,32 +3,40 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>microgpt.py in Three Columns</title>
+  <title>de novo microgpt</title>
   <style>
+    @font-face {
+      font-family: "Rational Integer";
+      src: url("./assets/fonts/RationalInteger.ttf") format("truetype");
+      font-display: swap;
+    }
+
     :root {
-      --rosewater: #dc8a78;
-      --pink: #ea76cb;
-      --mauve: #8839ef;
-      --red: #d20f39;
-      --peach: #fe640b;
-      --yellow: #df8e1d;
-      --green: #40a02b;
-      --teal: #179299;
-      --sky: #04a5e5;
-      --blue: #1e66f5;
-      --lavender: #7287fd;
-      --text: #4c4f69;
-      --subtext: #6c6f85;
-      --surface: #ccd0da;
-      --mantle: #e6e9ef;
-      --base: #eff1f5;
-      --crust: #dce0e8;
-      --bg: var(--crust);
-      --panel: rgba(239, 241, 245, 0.92);
+      --rosewater: #f5e0dc;
+      --pink: #f5c2e7;
+      --mauve: #cba6f7;
+      --red: #f38ba8;
+      --peach: #fab387;
+      --yellow: #f9e2af;
+      --green: #a6e3a1;
+      --teal: #94e2d5;
+      --sky: #89dceb;
+      --blue: #89b4fa;
+      --lavender: #b4befe;
+      --text: #cdd6f4;
+      --subtext: #a6adc8;
+      --surface: #313244;
+      --mantle: #181825;
+      --base: #1e1e2e;
+      --crust: #11111b;
+      --bg: var(--base);
+      --panel: rgba(30, 30, 46, 0.92);
       --ink: var(--text);
-      --rule: rgba(108, 111, 133, 0.18);
+      --rule: rgba(166, 173, 200, 0.20);
       --accent: var(--mauve);
-      --code-size: 7.2px;
+      --display-font: "Rational Integer", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      --code-size-base: 7.2px;
+      --code-size: var(--code-size-base);
       --code-lh: 1.02;
       --gutter: 10px;
       --pad: 10px;
@@ -41,24 +49,60 @@
       width: 100%;
       height: 100%;
       background:
-        radial-gradient(circle at top left, rgba(136, 57, 239, 0.12), transparent 36%),
-        radial-gradient(circle at bottom right, rgba(4, 165, 229, 0.10), transparent 34%),
-        linear-gradient(180deg, var(--mantle) 0%, var(--crust) 100%);
+        radial-gradient(circle at top left, rgba(203, 166, 247, 0.18), transparent 36%),
+        radial-gradient(circle at bottom right, rgba(137, 220, 235, 0.14), transparent 34%),
+        linear-gradient(180deg, var(--base) 0%, var(--crust) 100%);
       color: var(--ink);
     }
 
     body {
       font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-      overflow: hidden;
+      overflow-x: hidden;
+      overflow-y: auto;
+    }
+
+    .stage {
+      display: grid;
+      width: 100%;
+      min-height: 100vh;
+    }
+
+    .masthead {
+      grid-row: 1;
+      place-self: center;
+      display: grid;
+      gap: 8px;
+      text-align: center;
+    }
+
+    .title {
+      margin: 0;
+      color: var(--accent);
+      font: 700 clamp(76px, 8.8vw, 128px)/1 var(--display-font);
+      letter-spacing: 0.08em;
+      text-transform: none;
+    }
+
+    .subtitle {
+      margin: 0;
+      color: var(--subtext);
+      font: 600 clamp(30px, 3.2vw, 48px)/1.1 var(--display-font);
+      letter-spacing: 0.06em;
     }
 
     .frame {
+      grid-row: 2;
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: var(--gutter);
       width: 100vw;
-      height: 100vh;
+      height: auto;
       padding: var(--pad);
+      align-items: stretch;
+    }
+
+    .spacer {
+      grid-row: 3;
     }
 
     .col {
@@ -68,7 +112,7 @@
       border: 1px solid var(--rule);
       border-radius: 12px;
       background: var(--panel);
-      box-shadow: 0 10px 30px rgba(76, 79, 105, 0.10);
+      box-shadow: 0 10px 30px rgba(17, 17, 27, 0.35);
       overflow: hidden;
     }
 
@@ -102,55 +146,114 @@
     .tok-def { color: var(--blue); font-weight: 600; }
     .tok-op { color: var(--sky); }
     .tok-self { color: var(--teal); }
-
-    .meta {
-      position: fixed;
-      top: 8px;
-      right: 12px;
-      padding: 2px 6px;
-      border: 1px solid var(--rule);
-      border-radius: 999px;
-      background: rgba(239, 241, 245, 0.82);
-      color: var(--accent);
-      font: 600 9px/1.1 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-      backdrop-filter: blur(10px);
-    }
+    .tok-lno { color: #585b70; }
 
     .settings {
       position: fixed;
       right: 12px;
       bottom: 12px;
-      width: 168px;
+      width: 208px;
       border: 1px solid var(--rule);
       border-radius: 12px;
-      background: rgba(239, 241, 245, 0.90);
-      box-shadow: 0 10px 30px rgba(76, 79, 105, 0.12);
-      font: 500 11px/1.3 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      background: rgba(30, 30, 46, 0.90);
+      box-shadow: 0 10px 30px rgba(17, 17, 27, 0.40);
+      font: 500 13px/1.35 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
       color: var(--ink);
       backdrop-filter: blur(10px);
     }
 
     .settings summary {
+      display: flex;
+      gap: 8px;
+      align-items: center;
       list-style: none;
       cursor: pointer;
-      padding: 8px 10px;
+      padding: 10px 12px;
       color: var(--accent);
+      font-size: 1.4em;
       font-weight: 700;
       user-select: none;
+    }
+
+    .settings summary span[aria-hidden="true"] {
+      font-size: 1.43em;
+      line-height: 0.8;
+      display: inline-block;
+      transform-origin: center;
+      will-change: transform;
+    }
+
+    .settings summary .gear-icon.is-signaling {
+      animation: gear-signal 900ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+
+    .settings summary:hover .gear-icon:not(.is-signaling) {
+      animation: gear-hover 1000ms cubic-bezier(0.2, 0.0, 0.2, 1);
+    }
+
+    .settings summary .settings-label {
+      display: inline-block;
+      transform-origin: left center;
+      will-change: transform;
+    }
+
+    .settings summary .settings-label.is-signaling {
+      animation: label-signal 900ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+
+    @keyframes gear-signal {
+      0% { transform: rotate(0deg) scale(1); }
+      20% { transform: rotate(70deg) scale(1.10); }
+      55% { transform: rotate(220deg) scale(1.32); }
+      100% { transform: rotate(360deg) scale(1); }
+    }
+
+    @keyframes gear-hover {
+      0% { transform: rotate(0deg); }
+      18% { transform: rotate(22deg); }
+      54% { transform: rotate(245deg); }
+      82% { transform: rotate(336deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    @keyframes label-signal {
+      0% { transform: rotate(0deg) scale(1); }
+      20% { transform: rotate(-4deg) scale(1.06); }
+      55% { transform: rotate(4deg) scale(1.16); }
+      80% { transform: rotate(-2deg) scale(1.08); }
+      100% { transform: rotate(0deg) scale(1); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .settings summary:hover .gear-icon:not(.is-signaling) { animation: none; }
+      .settings summary .gear-icon.is-signaling { animation: none; }
+      .settings summary .settings-label.is-signaling { animation: none; }
     }
 
     .settings summary::-webkit-details-marker { display: none; }
 
     .settings form {
       display: grid;
-      gap: 6px;
-      padding: 0 10px 10px;
+      gap: 8px;
+      padding: 0 12px 12px;
     }
 
     .settings label {
       display: flex;
-      gap: 6px;
+      gap: 8px;
       align-items: center;
+    }
+
+    .settings button {
+      margin-top: 4px;
+      padding: 9px 10px;
+      border: 1px solid var(--rule);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--accent);
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
     }
 
     .error {
@@ -170,31 +273,55 @@
       margin-top: 8px;
       padding: 4px 8px;
       border-radius: 8px;
-      background: rgba(138, 90, 43, 0.08);
+      background: rgba(203, 166, 247, 0.14);
     }
   </style>
 </head>
 <body>
-  <div class="meta" id="meta">microgpt.py</div>
-  <main class="frame" id="frame">
-    <section class="error">Loading <code>microgpt.py</code>...</section>
-  </main>
+  <section class="stage">
+    <header class="masthead">
+      <h1 class="title">de novo microgpt</h1>
+      <p class="subtitle">GPTception</p>
+    </header>
+    <main class="frame" id="frame">
+      <section class="error">Loading <code>microgpt.py</code>...</section>
+    </main>
+    <div class="spacer" aria-hidden="true"></div>
+  </section>
   <details class="settings">
-    <summary>Display</summary>
+    <summary id="settings-summary"><span class="gear-icon" aria-hidden="true">⚙</span> <span class="settings-label">Settings</span></summary>
     <form id="settings-form">
       <label><input type="radio" name="display-mode" value="overflow"> overflow</label>
       <label><input type="radio" name="display-mode" value="scroll"> scroll</label>
       <label><input type="radio" name="display-mode" value="wrap"> wrap</label>
+      <label><input type="checkbox" id="auto-scale-toggle"> auto scale</label>
+      <label><input type="checkbox" id="line-numbers-toggle"> line numbers</label>
+      <button type="button" id="comments-toggle">strip comments</button>
     </form>
   </details>
   <script>
+    const stage = document.querySelector(".stage");
+    const masthead = document.querySelector(".masthead");
     const frame = document.getElementById("frame");
-    const meta = document.getElementById("meta");
+    const settingsSummary = document.getElementById("settings-summary");
+    const gearIcon = document.querySelector(".gear-icon");
+    const settingsLabel = document.querySelector(".settings-label");
     const modeInputs = Array.from(document.querySelectorAll('input[name="display-mode"]'));
+    const autoScaleToggle = document.getElementById("auto-scale-toggle");
+    const lineNumbersToggle = document.getElementById("line-numbers-toggle");
+    const commentsToggle = document.getElementById("comments-toggle");
     const KEYWORDS = new Set("and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield".split(" "));
     const LITERALS = new Set(["False", "None", "True"]);
     const MODE_KEY = "microgpt_display_mode";
+    const SCALE_KEY = "microgpt_auto_scale";
+    const LINE_KEY = "microgpt_line_numbers";
+    const COMMENT_KEY = "microgpt_comment_mode";
+    const COMMENT_MODES = ["all", "headers", "none"];
+    const BASE_CODE_SIZE = 7.2;
+    let sourceText = "";
     let linesNow = [];
+    let gearSignalTimer = 0;
+    let settingsSignalingStopped = false;
 
     function esc(text) {
       return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
@@ -275,64 +402,213 @@
       return [0, 1, 2].map(i => lines.slice(i * height, (i + 1) * height));
     }
 
+    function transformComments(text, mode) {
+      if (mode === "all") return text;
+      let out = "";
+      let i = 0;
+      let quote = "";
+      let triple = false;
+      let lineIndentOnly = true;
+      while (i < text.length) {
+        const ch = text[i];
+        if (quote) {
+          if (ch === "\\") {
+            out += ch;
+            if (i + 1 < text.length) out += text[i + 1];
+            i += 2;
+            continue;
+          }
+          if (triple && text.slice(i, i + 3) === quote.repeat(3)) {
+            out += quote.repeat(3);
+            i += 3;
+            quote = "";
+            triple = false;
+            continue;
+          }
+          out += ch;
+          i += 1;
+          if (!triple && ch === quote) quote = "";
+          if (ch === "\n") lineIndentOnly = true;
+          continue;
+        }
+        if (ch === "'" || ch === '"') {
+          if (text.slice(i, i + 3) === ch.repeat(3)) {
+            out += ch.repeat(3);
+            i += 3;
+            quote = ch;
+            triple = true;
+            lineIndentOnly = false;
+            continue;
+          }
+          out += ch;
+          i += 1;
+          quote = ch;
+          triple = false;
+          lineIndentOnly = false;
+          continue;
+        }
+        if (ch === "#") {
+          if (mode === "headers" && lineIndentOnly) {
+            while (i < text.length && text[i] !== "\n") out += text[i++];
+            continue;
+          }
+          while (i < text.length && text[i] !== "\n") i += 1;
+          continue;
+        }
+        out += ch;
+        if (ch === "\n") lineIndentOnly = true;
+        else if (ch !== " " && ch !== "\t") lineIndentOnly = false;
+        i += 1;
+      }
+      return out.replace(/[ \t]+$/gm, "");
+    }
+
     function setMode(mode) {
       frame.dataset.mode = mode;
       localStorage.setItem(MODE_KEY, mode);
       for (const input of modeInputs) input.checked = input.value === mode;
     }
 
+    function setAutoScale(enabled) {
+      localStorage.setItem(SCALE_KEY, enabled ? "1" : "0");
+      autoScaleToggle.checked = enabled;
+    }
+
+    function setLineNumbers(enabled) {
+      localStorage.setItem(LINE_KEY, enabled ? "1" : "0");
+      lineNumbersToggle.checked = enabled;
+    }
+
+    function setCommentMode(mode) {
+      localStorage.setItem(COMMENT_KEY, mode);
+      commentsToggle.textContent = `comments: ${mode}`;
+      commentsToggle.dataset.mode = mode;
+    }
+
+    function nextCommentMode() {
+      const mode = commentsToggle.dataset.mode || "all";
+      return COMMENT_MODES[(COMMENT_MODES.indexOf(mode) + 1) % COMMENT_MODES.length];
+    }
+
     function fitTypography(lines) {
-      const pad = 20;
-      const gap = 20;
-      const inner = 20;
-      const uiScale = 2.0;
-      const width = window.innerWidth - pad;
-      const columnWidth = (width - gap) / 3 - inner;
-      const maxLen = Math.max(...lines.map(line => line.length), 1);
-      const size = Math.min(21.6, uiScale * columnWidth / (maxLen * 0.54));
+      if (!autoScaleToggle.checked) {
+        document.documentElement.style.setProperty("--code-size", `${BASE_CODE_SIZE}px`);
+        return;
+      }
+      const lineNumberChars = lineNumbersToggle.checked ? String(lines.length).length + 1 : 0;
+      const targetChars = 96 + lineNumberChars;
+      const columnWidth = frame.clientWidth / 3 - 20;
+      const size = Math.min(18.4, columnWidth / (targetChars * 0.54));
       document.documentElement.style.setProperty("--code-size", `${size.toFixed(3)}px`);
-      meta.textContent = "microgpt.py";
+    }
+
+    function layoutStage() {
+      const centered = Math.max(0, (window.innerHeight - frame.offsetHeight) / 2);
+      const topGap = Math.max(masthead.offsetHeight + 8, Math.min(300, centered));
+      stage.style.gridTemplateRows = `${topGap}px auto 1fr`;
+    }
+
+    function signalSettings() {
+      if (!gearIcon || !settingsLabel || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+      gearIcon.classList.remove("is-signaling");
+      settingsLabel.classList.remove("is-signaling");
+      void gearIcon.offsetWidth;
+      gearIcon.classList.add("is-signaling");
+      settingsLabel.classList.add("is-signaling");
+      setTimeout(() => gearIcon.classList.remove("is-signaling"), 950);
+      setTimeout(() => settingsLabel.classList.remove("is-signaling"), 950);
+    }
+
+    function stopSettingsSignals() {
+      settingsSignalingStopped = true;
+      clearTimeout(gearSignalTimer);
+      gearIcon.classList.remove("is-signaling");
+      settingsLabel.classList.remove("is-signaling");
+    }
+
+    function scheduleGearSignals() {
+      const start = performance.now();
+      const tick = () => {
+        if (settingsSignalingStopped) return;
+        signalSettings();
+        if (performance.now() - start < 30000) gearSignalTimer = setTimeout(tick, 4000);
+      };
+      gearSignalTimer = setTimeout(tick, 2200);
+    }
+
+    function rerender() {
+      if (!sourceText) return;
+      const mode = commentsToggle.dataset.mode || "all";
+      const text = transformComments(sourceText, mode);
+      render(text.replace(/\r\n/g, "\n").split("\n"));
+    }
+
+    function renderChunk(chunk, start, pad) {
+      return chunk.map((line, i) => {
+        if (!lineNumbersToggle.checked) return highlightPython(line);
+        const n = String(start + i + 1).padStart(pad);
+        return `${span("tok-lno", n)} ${highlightPython(line)}`;
+      }).join("\n");
     }
 
     function render(lines) {
       linesNow = lines;
       fitTypography(lines);
       frame.innerHTML = "";
-      for (const chunk of splitColumns(lines)) {
+      const pad = String(lines.length).length;
+      const chunks = splitColumns(lines);
+      for (let i = 0; i < chunks.length; i += 1) {
+        const chunk = chunks[i];
         const col = document.createElement("section");
         col.className = "col";
         const pre = document.createElement("pre");
-        pre.innerHTML = highlightPython(chunk.join("\n"));
+        pre.innerHTML = renderChunk(chunk, i * Math.ceil(lines.length / 3), pad);
         col.appendChild(pre);
         frame.appendChild(col);
       }
+      layoutStage();
     }
 
     async function load() {
       try {
         const res = await fetch("./microgpt.py", { cache: "no-store" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const text = await res.text();
-        render(text.replace(/\r\n/g, "\n").split("\n"));
+        sourceText = await res.text();
+        rerender();
       } catch (err) {
         frame.innerHTML = `
           <section class="error">
             This page loads <code>microgpt.py</code> at runtime, so it must be served over HTTP.
           </section>
         `;
-        meta.textContent = "microgpt.py • load failed";
       }
     }
 
-    const savedMode = localStorage.getItem(MODE_KEY) || "scroll";
-    setMode(savedMode);
+    setMode("overflow");
+    setAutoScale(localStorage.getItem(SCALE_KEY) !== "0");
+    setLineNumbers(localStorage.getItem(LINE_KEY) === "1");
+    setCommentMode("headers");
     for (const input of modeInputs) {
       input.addEventListener("change", () => {
         setMode(input.value);
-        if (linesNow.length) render(linesNow);
+        if (sourceText) rerender();
       });
     }
-    addEventListener("resize", () => linesNow.length && render(linesNow));
+    autoScaleToggle.addEventListener("change", () => {
+      setAutoScale(autoScaleToggle.checked);
+      if (sourceText) rerender();
+    });
+    lineNumbersToggle.addEventListener("change", () => {
+      setLineNumbers(lineNumbersToggle.checked);
+      if (sourceText) rerender();
+    });
+    commentsToggle.addEventListener("click", () => {
+      setCommentMode(nextCommentMode());
+      rerender();
+    });
+    settingsSummary.addEventListener("click", stopSettingsSignals, { once: true });
+    addEventListener("resize", () => sourceText ? rerender() : layoutStage());
+    scheduleGearSignals();
     load();
   </script>
 </body>

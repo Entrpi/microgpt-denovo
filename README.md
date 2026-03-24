@@ -1,5 +1,9 @@
 # microgpt-denovo
 
+[![De Novo MicroGPT three-column view](assets/images/microgpt-three-column-view.png)](https://entrpi.github.io/microgpt-denovo/)
+
+Live three-column view (interactive, with display settings): [https://entrpi.github.io/microgpt-denovo/](https://entrpi.github.io/microgpt-denovo/)
+
 This readme is the only hand-written file in this repo.
 
 I started this project after watching [Andrej Karpathy&#39;s recent interview on No Priors](https://youtu.be/kwSVtQ7dziU?si=yMaHgEizVzWvKano&t=3689) where he explained that he had to hand-write `microgpt`, a 200-line GPT implementation in Python which distills the essence of all the algorithms behind creating Transformers, because the LLMs he asked weren't able to do it.
