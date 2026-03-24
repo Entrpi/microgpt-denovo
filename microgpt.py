@@ -1,6 +1,4 @@
 """
-microgpt.py
-
 Single-file, from-scratch Python implementation of a tiny decoder-only GPT
 trained on the makemore names corpus. The goal is to show the algorithm as
 directly as possible: a scalar autograd engine, list-based tensors, explicit
@@ -8,6 +6,7 @@ loops, and one coherent Transformer training loop.
 """
 
 import math
+import os
 import random
 import urllib.request
 
@@ -23,6 +22,7 @@ import urllib.request
 URL = "https://raw.githubusercontent.com/karpathy/makemore/988aa59/names.txt"  # The tiny corpus we will learn from.
 S = "\n"                                  # Newline marks name boundaries and also starts generation.
 T, C, H = 16, 16, 4                       # Block size, model width, and number of attention heads.
+LAYERS = int(os.getenv("MICROGPT_LAYERS", "1"))  # Stack this many identical Transformer blocks.
 D, F = C // H, 4 * C                      # Per-head width and the hidden width of the MLP.
 STEPS = 1000                              # Train for a small fixed number of updates.
 LR, B1, B2, EPS = 3e-3, 0.9, 0.99, 1e-8   # Adam's step size, moment decay rates, and numerical floor.
@@ -114,19 +114,24 @@ def init_matrix(rows, cols, scale=0.02):                          # Small random
     std = scale / math.sqrt(fan_in)
     return [[Value(rng.gauss(0.0, std)) for _ in range(cols)] for _ in range(rows)]
 
+def init_block(ones):                                             # A Transformer block is one attention branch plus one MLP branch.
+    return {
+        "g1": ones(C),                                            # RMSNorm scale before attention.
+        "wq": init_matrix(C, C),                                  # Query projection.
+        "wk": init_matrix(C, C),                                  # Key projection.
+        "wv": init_matrix(C, C),                                  # Value projection.
+        "wo": init_matrix(C, C),                                  # Output mix after the heads are merged.
+        "g2": ones(C),                                            # RMSNorm scale before the MLP.
+        "fc": init_matrix(C, F),                                  # MLP expansion layer.
+        "proj": init_matrix(F, C),                                # MLP projection back to residual width.
+    }
+
 def init_params(vocab):                                           # One dict holds the whole model so the training loop can read it directly.
     ones = lambda n: [Value(1.0) for _ in range(n)]               # Norm gains start as neutral scalers.
     return {
         "wte": init_matrix(vocab, C),                             # Token embeddings, tied to the output head.
         "wpe": init_matrix(T, C),                                 # Learned position vectors for each visible slot.
-        "g1": ones(C),                                            # First RMSNorm scale before attention.
-        "wq": init_matrix(C, C),                                  # Query projection.
-        "wk": init_matrix(C, C),                                  # Key projection.
-        "wv": init_matrix(C, C),                                  # Value projection.
-        "wo": init_matrix(C, C),                                  # Output mix after the heads are merged.
-        "g2": ones(C),                                            # Second RMSNorm scale before the MLP.
-        "fc": init_matrix(C, F),                                  # MLP expansion layer.
-        "proj": init_matrix(F, C),                                # MLP projection back to residual width.
+        "blocks": [init_block(ones) for _ in range(LAYERS)],      # Stack as many identical blocks as the layer count requests.
         "gf": ones(C),                                            # Final RMSNorm scale before logits.
     }
 
@@ -171,16 +176,16 @@ def rmsnorm(vec, gain):                                          # RMSNorm resca
         out.append(gain[i] * (vec[i] / scale))
     return out
 
-def attention(seq, p):                                           # Each token asks the causal past for the information it needs.
+def attention(seq, block):                                       # Each token asks the causal past for the information it needs.
     n = len(seq)
     x = []
     for vec in seq:
-        x.append(rmsnorm(vec, p["g1"]))                          # Normalize first so attention reads stable vectors.
+        x.append(rmsnorm(vec, block["g1"]))                      # Normalize first so attention reads stable vectors.
     q, k, v = [], [], []                                         # The same vector becomes a question, a key, and a value.
     for vec in x:
-        q.append(linear(vec, p["wq"]))                           # Queries ask what this position wants.
-        k.append(linear(vec, p["wk"]))                           # Keys say what each past position offers.
-        v.append(linear(vec, p["wv"]))                           # Values carry the content to be copied forward.
+        q.append(linear(vec, block["wq"]))                       # Queries ask what this position wants.
+        k.append(linear(vec, block["wk"]))                       # Keys say what each past position offers.
+        v.append(linear(vec, block["wv"]))                       # Values carry the content to be copied forward.
     out = []                                                     # One updated vector per position.
     for i in range(n):
         merged = [Value(0.0) for _ in range(C)]
@@ -199,18 +204,18 @@ def attention(seq, p):                                           # Each token as
                 for j in range(i + 1):
                     acc = acc + weights[j] * v[j][idx]
                 merged[idx] = acc                                # Each head writes its own summary into its slice.
-        out.append(linear(merged, p["wo"]))                      # The output projection recombines all heads into one update.
+        out.append(linear(merged, block["wo"]))                  # The output projection recombines all heads into one update.
     return out
 
-def mlp(seq, p):                                                 # The MLP revises each position independently after attention has mixed context.
+def mlp(seq, block):                                             # The MLP revises each position independently after attention has mixed context.
     out = []                                                     # Collect the per-position refinements.
     for vec in seq:
-        h = rmsnorm(vec, p["g2"])                                # Normalize again before the feed-forward move.
-        z = linear(h, p["fc"])
+        h = rmsnorm(vec, block["g2"])                            # Normalize again before the feed-forward move.
+        z = linear(h, block["fc"])
         relu = []
         for v in z:
             relu.append(v.relu())                                # ReLU keeps only the channels that fire.
-        out.append(linear(relu, p["proj"]))                      # Project back to residual width.
+        out.append(linear(relu, block["proj"]))                  # Project back to residual width.
     return out
 
 def forward(tokens, p):                                          # One forward pass goes embeddings -> attention -> MLP -> tied logits.
@@ -220,10 +225,11 @@ def forward(tokens, p):                                          # One forward p
         for c in range(C):
             vec.append(p["wte"][tokens[t]][c] + p["wpe"][t][c])  # Content and position enter together.
         seq.append(vec)
-    att = attention(seq, p)
-    seq = [[seq[i][j] + att[i][j] for j in range(C)] for i in range(len(seq))]  # Residual stream keeps the old state plus the attention update.
-    mid = mlp(seq, p)
-    seq = [[seq[i][j] + mid[i][j] for j in range(C)] for i in range(len(seq))]  # The MLP adds another residual refinement.
+    for block in p["blocks"]:                                    # Each layer repeats the same attention-then-MLP pattern.
+        att = attention(seq, block)
+        seq = [[seq[i][j] + att[i][j] for j in range(C)] for i in range(len(seq))]  # Residual stream keeps the old state plus the attention update.
+        mid = mlp(seq, block)
+        seq = [[seq[i][j] + mid[i][j] for j in range(C)] for i in range(len(seq))]  # The MLP adds another residual refinement.
     seq = [rmsnorm(vec, p["gf"]) for vec in seq]                                # Final normalization before vocabulary scoring.
     logits = []
     for vec in seq:

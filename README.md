@@ -258,13 +258,21 @@ Let's review the whitespace and comments to make sure they flow neatly. Avoid ad
 
 Assistant:
 Cleaned up the Python file so the comments read more consistently as a right-hand second column.
+
+User:
+Our model has no ability to add layers.
+
+Assistant:
+Added real layer support to both implementations.
+
+In `microgpt.py`, `LAYERS` is now a real architecture setting, the parameter tree stores a `blocks` list, and the forward pass loops across those blocks instead of hardcoding one attention-plus-MLP block. In `microgpt_matrix.jl`, the same idea now appears as a `BlockParams` vector inside `Params`, with forward pass, backward pass, Adam, and zero-filled optimizer buffers all iterating across the layer stack. Both files were then smoke-tested with `2` layers to confirm the new depth path actually runs.
 ```
 
 ## Status
 
 This repository now contains two verified runnable implementations:
 
-- `microgpt.py` runs under `uv` with CPython 3.14 and a hand-rolled scalar `Value` autograd engine whose backward pass follows explicit `(child, local_grad)` edges.
+- `microgpt.py` runs under `uv` with CPython 3.14, uses a hand-rolled scalar `Value` autograd engine whose backward pass follows explicit `(child, local_grad)` edges.
 - `microgpt_matrix.jl` runs under Julia 1.12 with no external Julia package dependencies.
 
 Both train for 1000 steps on the raw newline-delimited names stream and then sample names at temperature `0.5`.
