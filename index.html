@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>microgpt.py in Three Columns</title>
+  <style>
+    :root {
+      --rosewater: #dc8a78;
+      --pink: #ea76cb;
+      --mauve: #8839ef;
+      --red: #d20f39;
+      --peach: #fe640b;
+      --yellow: #df8e1d;
+      --green: #40a02b;
+      --teal: #179299;
+      --sky: #04a5e5;
+      --blue: #1e66f5;
+      --lavender: #7287fd;
+      --text: #4c4f69;
+      --subtext: #6c6f85;
+      --surface: #ccd0da;
+      --mantle: #e6e9ef;
+      --base: #eff1f5;
+      --crust: #dce0e8;
+      --bg: var(--crust);
+      --panel: rgba(239, 241, 245, 0.92);
+      --ink: var(--text);
+      --rule: rgba(108, 111, 133, 0.18);
+      --accent: var(--mauve);
+      --code-size: 7.2px;
+      --code-lh: 1.02;
+      --gutter: 10px;
+      --pad: 10px;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      background:
+        radial-gradient(circle at top left, rgba(136, 57, 239, 0.12), transparent 36%),
+        radial-gradient(circle at bottom right, rgba(4, 165, 229, 0.10), transparent 34%),
+        linear-gradient(180deg, var(--mantle) 0%, var(--crust) 100%);
+      color: var(--ink);
+    }
+
+    body {
+      font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      overflow: hidden;
+    }
+
+    .frame {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: var(--gutter);
+      width: 100vw;
+      height: 100vh;
+      padding: var(--pad);
+    }
+
+    .col {
+      min-width: 0;
+      min-height: 0;
+      padding: 8px 10px;
+      border: 1px solid var(--rule);
+      border-radius: 12px;
+      background: var(--panel);
+      box-shadow: 0 10px 30px rgba(76, 79, 105, 0.10);
+      overflow: hidden;
+    }
+
+    pre {
+      margin: 0;
+      white-space: pre;
+      overflow: hidden;
+      font-size: var(--code-size);
+      line-height: var(--code-lh);
+      letter-spacing: -0.02em;
+      tab-size: 4;
+      font-variant-ligatures: none;
+    }
+
+    .frame[data-mode="overflow"] .col { overflow: hidden; }
+    .frame[data-mode="overflow"] pre { overflow: hidden; }
+    .frame[data-mode="scroll"] .col { overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+    .frame[data-mode="scroll"] pre { overflow: visible; }
+    .frame[data-mode="wrap"] .col { overflow-x: hidden; overflow-y: auto; scrollbar-width: thin; }
+    .frame[data-mode="wrap"] pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    .tok-com { color: var(--subtext); }
+    .tok-str { color: var(--green); }
+    .tok-num { color: var(--peach); }
+    .tok-kw { color: var(--mauve); font-weight: 600; }
+    .tok-lit { color: var(--red); font-weight: 600; }
+    .tok-def { color: var(--blue); font-weight: 600; }
+    .tok-op { color: var(--sky); }
+    .tok-self { color: var(--teal); }
+
+    .meta {
+      position: fixed;
+      top: 8px;
+      right: 12px;
+      padding: 2px 6px;
+      border: 1px solid var(--rule);
+      border-radius: 999px;
+      background: rgba(239, 241, 245, 0.82);
+      color: var(--accent);
+      font: 600 9px/1.1 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      backdrop-filter: blur(10px);
+    }
+
+    .settings {
+      position: fixed;
+      right: 12px;
+      bottom: 12px;
+      width: 168px;
+      border: 1px solid var(--rule);
+      border-radius: 12px;
+      background: rgba(239, 241, 245, 0.90);
+      box-shadow: 0 10px 30px rgba(76, 79, 105, 0.12);
+      font: 500 11px/1.3 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      color: var(--ink);
+      backdrop-filter: blur(10px);
+    }
+
+    .settings summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 8px 10px;
+      color: var(--accent);
+      font-weight: 700;
+      user-select: none;
+    }
+
+    .settings summary::-webkit-details-marker { display: none; }
+
+    .settings form {
+      display: grid;
+      gap: 6px;
+      padding: 0 10px 10px;
+    }
+
+    .settings label {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .error {
+      grid-column: 1 / -1;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      padding: 24px;
+      border: 1px solid var(--rule);
+      border-radius: 14px;
+      background: var(--panel);
+      font: 500 16px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    }
+
+    .error code {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 4px 8px;
+      border-radius: 8px;
+      background: rgba(138, 90, 43, 0.08);
+    }
+  </style>
+</head>
+<body>
+  <div class="meta" id="meta">microgpt.py</div>
+  <main class="frame" id="frame">
+    <section class="error">Loading <code>microgpt.py</code>...</section>
+  </main>
+  <details class="settings">
+    <summary>Display</summary>
+    <form id="settings-form">
+      <label><input type="radio" name="display-mode" value="overflow"> overflow</label>
+      <label><input type="radio" name="display-mode" value="scroll"> scroll</label>
+      <label><input type="radio" name="display-mode" value="wrap"> wrap</label>
+    </form>
+  </details>
+  <script>
+    const frame = document.getElementById("frame");
+    const meta = document.getElementById("meta");
+    const modeInputs = Array.from(document.querySelectorAll('input[name="display-mode"]'));
+    const KEYWORDS = new Set("and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield".split(" "));
+    const LITERALS = new Set(["False", "None", "True"]);
+    const MODE_KEY = "microgpt_display_mode";
+    let linesNow = [];
+
+    function esc(text) {
+      return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    }
+
+    function span(cls, text) {
+      return `<span class="${cls}">${esc(text)}</span>`;
+    }
+
+    function highlightPython(text) {
+      let html = "";
+      let i = 0;
+      let expectDef = false;
+      while (i < text.length) {
+        const ch = text[i];
+        if (ch === "\n") { html += "\n"; expectDef = false; i += 1; continue; }
+        if (ch === "#") {
+          let j = i;
+          while (j < text.length && text[j] !== "\n") j += 1;
+          html += span("tok-com", text.slice(i, j));
+          i = j;
+          continue;
+        }
+        if (ch === "'" || ch === '"') {
+          const triple = text.slice(i, i + 3) === ch.repeat(3);
+          let j = i + (triple ? 3 : 1);
+          while (j < text.length) {
+            if (text[j] === "\\") { j += 2; continue; }
+            if (triple && text.slice(j, j + 3) === ch.repeat(3)) { j += 3; break; }
+            if (!triple && text[j] === ch) { j += 1; break; }
+            if (!triple && text[j] === "\n") break;
+            j += 1;
+          }
+          html += span("tok-str", text.slice(i, j));
+          i = j;
+          expectDef = false;
+          continue;
+        }
+        if (/\d/.test(ch)) {
+          let j = i + 1;
+          while (j < text.length && /[\d_\.]/.test(text[j])) j += 1;
+          html += span("tok-num", text.slice(i, j));
+          i = j;
+          expectDef = false;
+          continue;
+        }
+        if (/[A-Za-z_]/.test(ch)) {
+          let j = i + 1;
+          while (j < text.length && /[A-Za-z0-9_]/.test(text[j])) j += 1;
+          const word = text.slice(i, j);
+          if (KEYWORDS.has(word)) {
+            html += span("tok-kw", word);
+            expectDef = word === "def" || word === "class";
+          } else if (LITERALS.has(word)) {
+            html += span("tok-lit", word);
+            expectDef = false;
+          } else if (word === "self") {
+            html += span("tok-self", word);
+            expectDef = false;
+          } else if (expectDef) {
+            html += span("tok-def", word);
+            expectDef = false;
+          } else {
+            html += esc(word);
+          }
+          i = j;
+          continue;
+        }
+        if (/[=+\-*/%<>!&|^~:@]/.test(ch)) { html += span("tok-op", ch); i += 1; continue; }
+        html += esc(ch);
+        i += 1;
+      }
+      return html;
+    }
+
+    function splitColumns(lines) {
+      const height = Math.ceil(lines.length / 3);
+      return [0, 1, 2].map(i => lines.slice(i * height, (i + 1) * height));
+    }
+
+    function setMode(mode) {
+      frame.dataset.mode = mode;
+      localStorage.setItem(MODE_KEY, mode);
+      for (const input of modeInputs) input.checked = input.value === mode;
+    }
+
+    function fitTypography(lines) {
+      const pad = 20;
+      const gap = 20;
+      const inner = 20;
+      const uiScale = 2.0;
+      const width = window.innerWidth - pad;
+      const columnWidth = (width - gap) / 3 - inner;
+      const maxLen = Math.max(...lines.map(line => line.length), 1);
+      const size = Math.min(21.6, uiScale * columnWidth / (maxLen * 0.54));
+      document.documentElement.style.setProperty("--code-size", `${size.toFixed(3)}px`);
+      meta.textContent = "microgpt.py";
+    }
+
+    function render(lines) {
+      linesNow = lines;
+      fitTypography(lines);
+      frame.innerHTML = "";
+      for (const chunk of splitColumns(lines)) {
+        const col = document.createElement("section");
+        col.className = "col";
+        const pre = document.createElement("pre");
+        pre.innerHTML = highlightPython(chunk.join("\n"));
+        col.appendChild(pre);
+        frame.appendChild(col);
+      }
+    }
+
+    async function load() {
+      try {
+        const res = await fetch("./microgpt.py", { cache: "no-store" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const text = await res.text();
+        render(text.replace(/\r\n/g, "\n").split("\n"));
+      } catch (err) {
+        frame.innerHTML = `
+          <section class="error">
+            This page loads <code>microgpt.py</code> at runtime, so it must be served over HTTP.
+          </section>
+        `;
+        meta.textContent = "microgpt.py • load failed";
+      }
+    }
+
+    const savedMode = localStorage.getItem(MODE_KEY) || "scroll";
+    setMode(savedMode);
+    for (const input of modeInputs) {
+      input.addEventListener("change", () => {
+        setMode(input.value);
+        if (linesNow.length) render(linesNow);
+      });
+    }
+    addEventListener("resize", () => linesNow.length && render(linesNow));
+    load();
+  </script>
+</body>
+</html>
