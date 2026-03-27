@@ -270,6 +270,16 @@ Assistant:
 Added real layer support to both implementations.
 
 In `microgpt.py`, `LAYERS` is now a real architecture setting, the parameter tree stores a `blocks` list, and the forward pass loops across those blocks instead of hardcoding one attention-plus-MLP block. In `microgpt_matrix.jl`, the same idea now appears as a `BlockParams` vector inside `Params`, with forward pass, backward pass, Adam, and zero-filled optimizer buffers all iterating across the layer stack. Both files were then smoke-tested with `2` layers to confirm the new depth path actually runs.
+
+User:
+Can we address this issue with MLP?
+With linear(vec, mat) interpreting mat as [out_dim][in_dim], fc and proj are reversed. Your comments say C -> F -> C, but the code does not implement that.
+Change to fc = init_matrix(F, C) and proj = init_matrix(C, F).
+
+Assistant:
+Fixed the MLP shape bug in `microgpt.py`.
+
+`fc` now initializes as `init_matrix(F, C)` so it really expands `C -> F`, and `proj` now initializes as `init_matrix(C, F)` so it contracts `F -> C` back into the residual stream. I also aligned `init_matrix(...)` with the same `[out_dim][in_dim]` convention by treating `cols` as the true fan-in. The Julia implementation was left unchanged because its `Y = XW` matrix convention was already consistent.
 ```
 
 ## Status

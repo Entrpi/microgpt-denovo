@@ -120,7 +120,7 @@ def zeros_like(tree):                                             # Adam keeps i
     return 0.0                                                    # Scalars start at zero.
 
 def init_matrix(rows, cols, scale=0.02):                          # Small random weights keep the first residual stream near identity.
-    fan_in = max(1, rows)
+    fan_in = max(1, cols)                                         # Each row is one output unit, so the input width is the true fan-in.
     std = scale / math.sqrt(fan_in)
     return [[Value(rng.gauss(0.0, std)) for _ in range(cols)] for _ in range(rows)]
 
@@ -132,8 +132,8 @@ def init_block(ones):                                             # A Transforme
         "wv": init_matrix(C, C),                                  # Value projection.
         "wo": init_matrix(C, C),                                  # Output mix after the heads are merged.
         "g2": ones(C),                                            # RMSNorm scale before the MLP.
-        "fc": init_matrix(C, F),                                  # MLP expansion layer.
-        "proj": init_matrix(F, C),                                # MLP projection back to residual width.
+        "fc": init_matrix(F, C),                                  # Expand each residual vector from width C to width F.
+        "proj": init_matrix(C, F),                                # Project the widened hidden state back down to width C.
     }
 
 def init_params(vocab):                                           # One dict holds the whole model so the training loop can read it directly.
