@@ -3,6 +3,13 @@ Single-file, from-scratch Python implementation of a tiny decoder-only GPT
 trained on the makemore names corpus. The goal is to show the algorithm as
 directly as possible: a scalar autograd engine, list-based tensors, explicit
 loops, and one coherent Transformer training loop.
+
+The file reads as one journey. First comes a number that remembers its own
+history (the autograd engine), because everything after it is built from such
+numbers. Then the data and the untrained weights, the forward pass that turns
+characters into predictions, the machinery of learning (loss, backward, Adam),
+and finally the trained model speaking. The sister file `microgpt_matrix.jl`
+tells the same story in matrix calculus, deriving every backward pass by hand.
 """
 
 import math
@@ -14,23 +21,27 @@ import urllib.request
 # 1. Setup, Scalar Autograd, Data, And Parameters
 # =============================================================================
 #
-# We start with the scalar autograd engine itself: a tiny graph of `Value`
-# objects that remembers how every number was formed. Then we load the names
-# corpus, turn characters into token ids, and initialize the matrices that will
-# become embeddings, attention, the MLP, and the output head.
+# We meet the autograd engine before the model because every number that
+# follows -- every weight, every activation, the loss itself -- will be a
+# `Value` that remembers how it was formed. Learning, when it comes, will just
+# walk that memory backward. With the engine in hand, we load the corpus, turn
+# its characters into token ids, and initialize the matrices that will become
+# embeddings, attention, the MLP, and the output head.
 
 URL = "https://raw.githubusercontent.com/karpathy/makemore/988aa59/names.txt"  # The tiny corpus we will learn from.
 S = "\n"                                  # Newline marks name boundaries and also starts generation.
-T, C, H = 16, 16, 4                       # Block size, model width, and number of attention heads.
-LAYERS = int(os.getenv("MICROGPT_LAYERS", "1"))  # Stack this many identical Transformer blocks.
-D, F = C // H, 4 * C                      # Per-head width and the hidden width of the MLP.
-STEPS = 1000                              # Train for a small fixed number of updates.
-LR, B1, B2, EPS = 3e-3, 0.9, 0.99, 1e-8   # Adam's step size, moment decay rates, and numerical floor.
-TEMP, LOG_EVERY = 0.5, 100                # Sampling temperature and how often we print training progress.
-NUM_SAMPLES, MAX_NEW = 20, T              # How many names to sample and how long each name may grow.
+T, C, H = 16, 16, 4                       # Context length, model width, and number of attention heads.
+LAYERS = int(os.getenv("MICROGPT_LAYERS", "1"))          # Stack this many identical Transformer blocks.
+D, F = C // H, 4 * C                      # Per-head width, and the MLP hidden width (the usual GPT factor of 4).
+STEPS = int(os.getenv("MICROGPT_STEPS", "1000"))         # Train for a small fixed number of updates.
+LR, B1, B2, EPS = 3e-3, 0.9, 0.99, 1e-8   # Adam's step size, moment decays, and a numerical floor shared with RMSNorm.
+TEMP = float(os.getenv("MICROGPT_TEMP", "0.5"))          # Sampling temperature makes generation more or less adventurous.
+LOG_EVERY = int(os.getenv("MICROGPT_LOG_EVERY", "100"))  # How often we print training progress.
+NUM_SAMPLES = int(os.getenv("MICROGPT_SAMPLES", "20"))   # How many names to sample after training.
+MAX_NEW = T                               # A sampled name may grow to at most one full context window.
 rng = random.Random(0)                    # A fixed seed keeps the demonstration repeatable.
 
-class Value:                                                       # This is the scalar autograd engine that makes the whole file learn by hand.
+class Value:                                                       # The autograd engine: a number that remembers which numbers made it and how sensitive it is to each.
     __slots__ = ("data", "grad", "_prev")                          # Each node keeps its value, its gradient, and edges of the form (child, local_grad).
 
     def __init__(self, data, prev=()):
@@ -97,7 +108,6 @@ def load_data():                                                   # The tokeniz
     ids = [stoi[ch] for ch in text]                                # The whole corpus becomes one long token stream.
     return ids, stoi, itos, len(chars)
 
-
 def leaves(tree):                                                  # Walk every scalar leaf in a nested tensor tree.
     if isinstance(tree, dict):                                     # Gradients live only on scalar leaves, so we recurse through dicts and lists.
         for v in tree.values():
@@ -119,9 +129,8 @@ def zeros_like(tree):                                             # Adam keeps i
         return [zeros_like(v) for v in tree]                      # Lists recurse element by element.
     return 0.0                                                    # Scalars start at zero.
 
-def init_matrix(rows, cols, scale=0.02):                          # Small random weights keep the first residual stream near identity.
-    fan_in = max(1, cols)                                         # Each row is one output unit, so the input width is the true fan-in.
-    std = scale / math.sqrt(fan_in)
+def init_matrix(rows, cols):                                      # Each row is one output unit, so the column count is the true fan-in.
+    std = 1.0 / math.sqrt(cols)                                   # Scaling weights by 1/sqrt(fan_in) keeps dot products O(1) at the start.
     return [[Value(rng.gauss(0.0, std)) for _ in range(cols)] for _ in range(rows)]
 
 def init_block(ones):                                             # A Transformer block is one attention branch plus one MLP branch.
@@ -163,7 +172,7 @@ def linear(vec, mat):                                             # Matrix-vecto
     return out
 
 def softmax(vec):                                                # Softmax turns logits into probabilities while staying numerically stable.
-    m = max(v.data for v in vec)                                 # Shift by the largest logit before exponentiating to keep the arithmetic calm.
+    m = max(v.data for v in vec)                                 # Shift by the largest logit to keep exp calm; a constant shift changes neither probabilities nor gradients.
     exps = []
     denom = Value(0.0)                                           # The denominator is the total unnormalized mass after exponentiation.
     for v in vec:
@@ -183,7 +192,7 @@ def rmsnorm(vec, gain):                                          # RMSNorm resca
     scale = (mean_sq + EPS).sqrt()                               # Root-mean-square gives the vector's scale.
     out = []
     for i in range(len(vec)):
-        out.append(gain[i] * (vec[i] / scale))
+        out.append(gain[i] * (vec[i] / scale))                   # Divide by that size, then let each channel relearn its own scale.
     return out
 
 def attention(seq, block):                                       # Each token asks the causal past for the information it needs.
@@ -199,20 +208,20 @@ def attention(seq, block):                                       # Each token as
     out = []                                                     # One updated vector per position.
     for i in range(n):
         merged = [Value(0.0) for _ in range(C)]
-        for h in range(H):                                       # Each head only sees the causal past of the current position.
-            scores = []
-            for j in range(i + 1):
+        for h in range(H):                                       # Each head is a small independent attention over its own channel slice.
+            scores = []                                          # A large query-key dot product means "this past token matters now."
+            for j in range(i + 1):                               # Only positions up to i are visible: the future stays hidden.
                 s = Value(0.0)
                 for d in range(D):
-                    idx = h * D + d
+                    idx = h * D + d                              # Head h owns the contiguous channel slice starting at h * D.
                     s = s + q[i][idx] * k[j][idx]
-                scores.append(s / math.sqrt(D))                  # Scale dot products so softmax stays gentle.
+                scores.append(s / math.sqrt(D))                  # Scale down so softmax stays gentle even as D grows.
             weights = softmax(scores)                            # Softmax turns scores into a distribution over visible positions.
             for d in range(D):
                 idx = h * D + d
                 acc = Value(0.0)
                 for j in range(i + 1):
-                    acc = acc + weights[j] * v[j][idx]
+                    acc = acc + weights[j] * v[j][idx]           # A weighted average of the past: attention is copying, softly.
                 merged[idx] = acc                                # Each head writes its own summary into its slice.
         out.append(linear(merged, block["wo"]))                  # The output projection recombines all heads into one update.
     return out
@@ -221,7 +230,7 @@ def mlp(seq, block):                                             # The MLP revis
     out = []                                                     # Collect the per-position refinements.
     for vec in seq:
         h = rmsnorm(vec, block["g2"])                            # Normalize again before the feed-forward move.
-        z = linear(h, block["fc"])
+        z = linear(h, block["fc"])                               # Expand into a wider space where features separate more easily.
         relu = []
         for v in z:
             relu.append(v.relu())                                # ReLU keeps only the channels that fire.
@@ -237,13 +246,13 @@ def forward(tokens, p):                                          # One forward p
         seq.append(vec)
     for block in p["blocks"]:                                    # Each layer repeats the same attention-then-MLP pattern.
         att = attention(seq, block)
-        seq = [[seq[i][j] + att[i][j] for j in range(C)] for i in range(len(seq))]  # Residual stream keeps the old state plus the attention update.
+        seq = [[seq[i][j] + att[i][j] for j in range(C)] for i in range(len(seq))]  # The update is added, never substituted: blocks learn corrections.
         mid = mlp(seq, block)
         seq = [[seq[i][j] + mid[i][j] for j in range(C)] for i in range(len(seq))]  # The MLP adds another residual refinement.
     seq = [rmsnorm(vec, p["gf"]) for vec in seq]                                # Final normalization before vocabulary scoring.
     logits = []
     for vec in seq:
-        logits.append(linear(vec, p["wte"]))
+        logits.append(linear(vec, p["wte"]))                     # The tied head: embedding rows score the very tokens they embed.
     return logits
 
 # =============================================================================
@@ -255,11 +264,11 @@ def forward(tokens, p):                                          # One forward p
 # computation, and Adam turns the gradients into small stable corrections.
 
 def loss(tokens, targets, p):                                    # Cross-entropy rewards probability mass on the true next character.
-    logits = forward(tokens, p)                                  # Training asks for high probability on the next correct character at each step.
+    logits = forward(tokens, p)                                  # One forward pass predicts at every position: T training examples at once.
     total = Value(0.0)                                           # Sum the surprise over the whole visible window.
     for t in range(len(targets)):
         probs = softmax(logits[t])                               # One position at a time becomes one probability distribution.
-        total = total + (-probs[targets[t]].log())
+        total = total + (-probs[targets[t]].log())               # Surprise: -log p is small only when the model expected the truth.
     return total / len(targets)                                  # Average cross-entropy over the visible window.
 
 def adam_step(tree, m, v, step):                                 # Adam keeps a running memory of direction and scale for every parameter.
@@ -274,22 +283,10 @@ def adam_step(tree, m, v, step):                                 # Adam keeps a 
     g = tree.grad                                                # Each scalar leaf already knows its gradient.
     m = B1 * m + (1.0 - B1) * g                                  # First moment tracks the gradient direction.
     v = B2 * v + (1.0 - B2) * (g * g)                            # Second moment tracks gradient scale.
-    mh = m / (1.0 - B1 ** step)                                  # Bias correction matters most early on.
-    vh = v / (1.0 - B2 ** step)
-    tree.data -= LR * mh / (math.sqrt(vh) + EPS)                 # Adam applies the step in place.
+    mh = m / (1.0 - B1 ** step)                                  # Moments start at zero and run small early; this repairs the underestimate.
+    vh = v / (1.0 - B2 ** step)                                  # The same repair for the scale estimate.
+    tree.data -= LR * mh / (math.sqrt(vh) + EPS)                 # Step against the gradient, sized by its own typical scale.
     return m, v
-
-
-def sample_index(probs):                                         # Sample one token from a categorical distribution.
-    u = rng.random()
-    s = 0.0
-    choice = len(probs) - 1                                      # Default to the final token if rounding leaves a gap.
-    for i in range(len(probs)):
-        s += probs[i].data
-        if u <= s:
-            choice = i
-            break
-    return choice
 
 # =============================================================================
 # 4. Training And Inference
@@ -326,16 +323,22 @@ def main():
 
     # --- Speak: Inference --------------------------------------------------
     for _ in range(NUM_SAMPLES):
-        out = [stoi[S]]                                          # Every name begins at the boundary token.
-        while len(out) <= MAX_NEW + 1:
+        out = [stoi[S]]                                          # Begin at the boundary: after a newline comes the start of a name.
+        while len(out) < MAX_NEW + 1:                            # Grow until the name fills one context window.
             ctx = out[-T:]                                       # Only the visible context window matters.
             logits = forward(ctx, p)[-1]                         # Predict the next character from the last position.
-            probs = softmax([z / TEMP for z in logits])          # Temperature makes sampling less or more adventurous.
-            nxt = sample_index(probs)                            # Draw the next character from the distribution.
+            probs = softmax([z / TEMP for z in logits])          # TEMP < 1 sharpens the distribution toward its favorites.
+            u, acc, nxt = rng.random(), 0.0, len(probs) - 1      # Invert the CDF; the last token covers any rounding gap.
+            for i in range(len(probs)):
+                acc += probs[i].data                             # Walk the distribution until the running mass covers u.
+                if u <= acc:
+                    nxt = i
+                    break
             out.append(nxt)
             if itos[nxt] == S:
                 break                                            # Newline ends the sampled name.
-        print("".join(itos[i] for i in out[1:-1]))               # Strip boundary tokens before printing.
+        name = "".join(itos[i] for i in out[1:])                 # Drop the opening boundary token.
+        print(name.rstrip(S))                                    # And the closing one, when sampling ended at a boundary.
 
 if __name__ == "__main__":
     main()
