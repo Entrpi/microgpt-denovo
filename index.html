@@ -238,6 +238,13 @@
       padding: 0 12px 12px;
     }
 
+    .settings hr {
+      width: 100%;
+      margin: 2px 0;
+      border: 0;
+      border-top: 1px solid var(--rule);
+    }
+
     .settings label {
       display: flex;
       gap: 8px;
@@ -284,13 +291,16 @@
       <p class="subtitle">GPTception</p>
     </header>
     <main class="frame" id="frame">
-      <section class="error">Loading <code>microgpt.py</code>...</section>
+      <section class="error">Loading source...</section>
     </main>
     <div class="spacer" aria-hidden="true"></div>
   </section>
   <details class="settings">
     <summary id="settings-summary"><span class="gear-icon" aria-hidden="true">⚙</span> <span class="settings-label">Settings</span></summary>
     <form id="settings-form">
+      <label><input type="radio" name="source-file" value="microgpt.py"> microgpt.py</label>
+      <label><input type="radio" name="source-file" value="microgpt_matrix.jl"> microgpt_matrix.jl</label>
+      <hr>
       <label><input type="radio" name="display-mode" value="overflow"> overflow</label>
       <label><input type="radio" name="display-mode" value="scroll"> scroll</label>
       <label><input type="radio" name="display-mode" value="wrap"> wrap</label>
@@ -306,18 +316,36 @@
     const settingsSummary = document.getElementById("settings-summary");
     const gearIcon = document.querySelector(".gear-icon");
     const settingsLabel = document.querySelector(".settings-label");
+    const fileInputs = Array.from(document.querySelectorAll('input[name="source-file"]'));
     const modeInputs = Array.from(document.querySelectorAll('input[name="display-mode"]'));
     const autoScaleToggle = document.getElementById("auto-scale-toggle");
     const lineNumbersToggle = document.getElementById("line-numbers-toggle");
     const commentsToggle = document.getElementById("comments-toggle");
-    const KEYWORDS = new Set("and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield".split(" "));
-    const LITERALS = new Set(["False", "None", "True"]);
+    const LANGS = {
+      python: {
+        keywords: new Set("and as assert async await break class continue def del elif else except finally for from global if import in is lambda nonlocal not or pass raise return try while with yield".split(" ")),
+        literals: new Set(["False", "None", "True"]),
+        defWords: new Set(["def", "class"]),
+        selfWords: new Set(["self"]),
+        transposeQuote: false,
+      },
+      julia: {
+        keywords: new Set("abstract baremodule begin break catch const continue do else elseif end export finally for function global if import in isa let local macro module mutable primitive quote return struct try using where while".split(" ")),
+        literals: new Set(["true", "false", "nothing", "missing", "NaN", "Inf", "undef"]),
+        defWords: new Set(["function", "struct", "macro", "module"]),
+        selfWords: new Set(),
+        transposeQuote: true,
+      },
+    };
+    const FILES = { "microgpt.py": LANGS.python, "microgpt_matrix.jl": LANGS.julia };
+    const FILE_KEY = "microgpt_source_file";
     const MODE_KEY = "microgpt_display_mode";
     const SCALE_KEY = "microgpt_auto_scale";
     const LINE_KEY = "microgpt_line_numbers";
     const COMMENT_KEY = "microgpt_comment_mode";
     const COMMENT_MODES = ["all", "headers", "none"];
-    const BASE_CODE_SIZE = 7.2;
+    const BASE_CODE_SIZE = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--code-size-base"));
+    let currentFile = "microgpt.py";
     let sourceText = "";
     let linesNow = [];
     let gearSignalTimer = 0;
@@ -331,18 +359,25 @@
       return `<span class="${cls}">${esc(text)}</span>`;
     }
 
-    function highlightPython(text) {
+    function highlightCode(text, lang) {
       let html = "";
       let i = 0;
       let expectDef = false;
+      let prev = "";
       while (i < text.length) {
         const ch = text[i];
-        if (ch === "\n") { html += "\n"; expectDef = false; i += 1; continue; }
+        if (ch === "\n") { html += "\n"; expectDef = false; prev = ""; i += 1; continue; }
         if (ch === "#") {
           let j = i;
           while (j < text.length && text[j] !== "\n") j += 1;
           html += span("tok-com", text.slice(i, j));
           i = j;
+          continue;
+        }
+        if (ch === "'" && lang.transposeQuote && /[A-Za-z0-9_)\]']/.test(prev)) {
+          html += span("tok-op", ch);
+          prev = ch;
+          i += 1;
           continue;
         }
         if (ch === "'" || ch === '"') {
@@ -358,27 +393,33 @@
           html += span("tok-str", text.slice(i, j));
           i = j;
           expectDef = false;
+          prev = ch;
           continue;
         }
         if (/\d/.test(ch)) {
           let j = i + 1;
           while (j < text.length && /[\d_\.]/.test(text[j])) j += 1;
+          if (/[eEfF]/.test(text[j] || "") && /[\d+-]/.test(text[j + 1] || "")) {
+            j += 2;
+            while (j < text.length && /\d/.test(text[j])) j += 1;
+          }
           html += span("tok-num", text.slice(i, j));
           i = j;
           expectDef = false;
+          prev = text[j - 1];
           continue;
         }
         if (/[A-Za-z_]/.test(ch)) {
           let j = i + 1;
           while (j < text.length && /[A-Za-z0-9_]/.test(text[j])) j += 1;
           const word = text.slice(i, j);
-          if (KEYWORDS.has(word)) {
+          if (lang.keywords.has(word)) {
             html += span("tok-kw", word);
-            expectDef = word === "def" || word === "class";
-          } else if (LITERALS.has(word)) {
+            expectDef = lang.defWords.has(word);
+          } else if (lang.literals.has(word)) {
             html += span("tok-lit", word);
             expectDef = false;
-          } else if (word === "self") {
+          } else if (lang.selfWords.has(word)) {
             html += span("tok-self", word);
             expectDef = false;
           } else if (expectDef) {
@@ -388,10 +429,12 @@
             html += esc(word);
           }
           i = j;
+          prev = text[j - 1];
           continue;
         }
-        if (/[=+\-*/%<>!&|^~:@]/.test(ch)) { html += span("tok-op", ch); i += 1; continue; }
+        if (/[=+\-*/%<>!&|^~:@]/.test(ch)) { html += span("tok-op", ch); prev = ch; i += 1; continue; }
         html += esc(ch);
+        prev = ch;
         i += 1;
       }
       return html;
@@ -402,38 +445,50 @@
       return [0, 1, 2].map(i => lines.slice(i * height, (i + 1) * height));
     }
 
-    function transformComments(text, mode) {
+    function transformComments(text, mode, lang) {
       if (mode === "all") return text;
       let out = "";
       let i = 0;
       let quote = "";
       let triple = false;
       let lineIndentOnly = true;
+      let prev = "";
       while (i < text.length) {
         const ch = text[i];
         if (quote) {
           if (ch === "\\") {
             out += ch;
             if (i + 1 < text.length) out += text[i + 1];
+            prev = text[i + 1] || ch;
             i += 2;
             continue;
           }
           if (triple && text.slice(i, i + 3) === quote.repeat(3)) {
             out += quote.repeat(3);
+            prev = quote;
             i += 3;
             quote = "";
             triple = false;
             continue;
           }
           out += ch;
+          prev = ch;
           i += 1;
           if (!triple && ch === quote) quote = "";
           if (ch === "\n") lineIndentOnly = true;
           continue;
         }
+        if (ch === "'" && lang.transposeQuote && /[A-Za-z0-9_)\]']/.test(prev)) {
+          out += ch;
+          prev = ch;
+          i += 1;
+          lineIndentOnly = false;
+          continue;
+        }
         if (ch === "'" || ch === '"') {
           if (text.slice(i, i + 3) === ch.repeat(3)) {
             out += ch.repeat(3);
+            prev = ch;
             i += 3;
             quote = ch;
             triple = true;
@@ -441,6 +496,7 @@
             continue;
           }
           out += ch;
+          prev = ch;
           i += 1;
           quote = ch;
           triple = false;
@@ -458,6 +514,7 @@
         out += ch;
         if (ch === "\n") lineIndentOnly = true;
         else if (ch !== " " && ch !== "\t") lineIndentOnly = false;
+        prev = ch;
         i += 1;
       }
       return out.replace(/[ \t]+$/gm, "");
@@ -539,15 +596,16 @@
     function rerender() {
       if (!sourceText) return;
       const mode = commentsToggle.dataset.mode || "all";
-      const text = transformComments(sourceText, mode);
+      const text = transformComments(sourceText, mode, FILES[currentFile]);
       render(text.replace(/\r\n/g, "\n").split("\n"));
     }
 
     function renderChunk(chunk, start, pad) {
+      const lang = FILES[currentFile];
       return chunk.map((line, i) => {
-        if (!lineNumbersToggle.checked) return highlightPython(line);
+        if (!lineNumbersToggle.checked) return highlightCode(line, lang);
         const n = String(start + i + 1).padStart(pad);
-        return `${span("tok-lno", n)} ${highlightPython(line)}`;
+        return `${span("tok-lno", n)} ${highlightCode(line, lang)}`;
       }).join("\n");
     }
 
@@ -569,25 +627,46 @@
       layoutStage();
     }
 
+    function setFile(name) {
+      currentFile = name;
+      localStorage.setItem(FILE_KEY, name);
+      for (const input of fileInputs) input.checked = input.value === name;
+    }
+
     async function load() {
+      const file = currentFile;
       try {
-        const res = await fetch("./microgpt.py", { cache: "no-store" });
+        const res = await fetch(`./${file}`, { cache: "no-store" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        sourceText = await res.text();
+        const text = await res.text();
+        if (file !== currentFile) return;
+        sourceText = text;
         rerender();
       } catch (err) {
+        if (file !== currentFile) return;
         frame.innerHTML = `
           <section class="error">
-            This page loads <code>microgpt.py</code> at runtime, so it must be served over HTTP.
+            Could not load <code>${esc(file)}</code> — ${esc(err.message)}.<br>
+            If this page was opened straight from disk, serve it over HTTP instead.
           </section>
         `;
       }
     }
 
-    setMode("overflow");
+    const savedFile = localStorage.getItem(FILE_KEY);
+    setFile(FILES[savedFile] ? savedFile : "microgpt.py");
+    const savedMode = localStorage.getItem(MODE_KEY);
+    setMode(modeInputs.some(input => input.value === savedMode) ? savedMode : "overflow");
     setAutoScale(localStorage.getItem(SCALE_KEY) !== "0");
     setLineNumbers(localStorage.getItem(LINE_KEY) === "1");
-    setCommentMode("headers");
+    const savedComments = localStorage.getItem(COMMENT_KEY);
+    setCommentMode(COMMENT_MODES.includes(savedComments) ? savedComments : "headers");
+    for (const input of fileInputs) {
+      input.addEventListener("change", () => {
+        setFile(input.value);
+        load();
+      });
+    }
     for (const input of modeInputs) {
       input.addEventListener("change", () => {
         setMode(input.value);
@@ -607,7 +686,10 @@
       rerender();
     });
     settingsSummary.addEventListener("click", stopSettingsSignals, { once: true });
-    addEventListener("resize", () => sourceText ? rerender() : layoutStage());
+    addEventListener("resize", () => {
+      if (linesNow.length) fitTypography(linesNow);
+      layoutStage();
+    });
     scheduleGearSignals();
     load();
   </script>
